@@ -11,6 +11,7 @@
 
 pub mod adapters;
 pub mod bus;
+pub mod catch_up;
 pub mod command;
 pub mod domain;
 pub mod error;

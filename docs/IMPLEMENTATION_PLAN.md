@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–7 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 8.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–7 and Step 8.1 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 8.2. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -476,12 +476,14 @@ Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/suppor
 ### Phase 8: Catch-up and operations (§18–21, §28.3)
 
 #### Step 8.1: Subscriptions and cron dispatcher
-Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/subscription_manager.rs`, `crates/tarodomain/src/catch_up/cron_dispatcher.rs`
-- [ ] `SubscriptionManager` (§18.2), including `get_lag_report` (pending events counted up to a limit, plus failed attempts)
-- [ ] `CronDispatcher`: `register(handler, stream)`, `catch_up(name) -> CatchUpResult { processed, has_more, failed }`, `run_all`
-- [ ] It reads raw events and deserializes them one at a time, so an unreadable event is skipped like any non-retryable failure instead of blocking the batch
-- [ ] A retryable error stops the subscription until the next run. A non-retryable one is dead-lettered and the cursor moves past it
-- [ ] An optional unit of work commits each event's handler and cursor move together. Opt-in `max_attempts` **(Dart)**
+Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/subscription_manager.rs`, `crates/tarodomain/src/catch_up/cron_dispatcher.rs`, `crates/tarodomain/tests/catch_up.rs`
+- [x] `SubscriptionManager` (§18.2), including `get_lag_report(count_limit)` (pending events counted up to the limit, with a `pending_capped` flag, plus failed attempts). `is_caught_up` and `reset` work on a registered subscription that isn't stored yet. `register` of a name on another stream is `INVALID_CONFIGURATION`
+- [x] `CronDispatcher`: `register(handler, stream)`, `catch_up(name) -> CatchUpResult { processed, dead_lettered, has_more, failed }`, `run_all`. `failed` is the retryable failure that stopped the run (`CatchUpFailure { event_id, attempts, error }`); `has_more` is exact (it reads one event past the batch) and `false` after a stop
+- [x] It reads raw events and deserializes them one at a time, so an unreadable event is dead-lettered whatever its error's category (a `SERIALIZATION_ERROR` is retryable, but reading it again wouldn't help) instead of blocking the batch
+- [x] A retryable error stops the subscription until the next run and counts an attempt in the subscription. A non-retryable one is dead-lettered and the cursor moves past it. A failed dead-letter write stops the run with a `DEAD_LETTER` error in `failed`, so the cursor stays put
+- [x] `with_units_of_work(provider)` commits each event's handler and cursor move (or its dead letter and cursor move) together. `with_max_attempts(n)` **(Dart)**, `with_batch_size(n)` (default 100)
+- [x] Tests (`tests/catch_up.rs`, on the local provider; Step 8.7 extends the file): batches and `has_more`, a category stream, a retryable stop and resume, a non-retryable skip, `max_attempts`, an unreadable event, units of work, registration checks, lag report, `advance`, `reset`. Mutations (unreadable events left to their category; no unit of work) each fail a test
+- [x] `DeadLetterWriter` doesn't exist yet (Step 8.3), so the dispatcher writes to the `DeadLetterStore` directly; Step 8.3 may route it through the writer
 
 #### Step 8.2: Backpressure
 Files: `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/backpressure.rs`
