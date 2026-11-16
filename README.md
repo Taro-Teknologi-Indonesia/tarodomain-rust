@@ -10,13 +10,13 @@ The spec is a git submodule at [`spec/`](spec), pinned to the version this code 
 
 | Crate | Spec sections | Contents | Status |
 |---|---|---|---|
-| [`tarodomain`](crates/tarodomain) | §2–23, §25, §28–29 | Domain primitives, event store wrapper and registry, aggregates, repositories, event bus, command pipelines, projections, sagas, idempotency, rebuild, DLQ, errors, DI, builder DSL | Kernel, errors, domain primitives and the persistence and bus contracts (Phases 1–3) |
+| [`tarodomain`](crates/tarodomain) | §2–23, §25, §28–29 | Domain primitives, event store wrapper and registry, aggregates, repositories, event bus, command pipelines, projections, sagas, idempotency, rebuild, DLQ, errors, DI, builder DSL | Done (Phases 1–9): the whole core |
 | [`tarodomain-local`](crates/tarodomain-local) | §24 (LocalProvider) | In-memory adapters for tests and local development | Done (Phase 4); passes every contract suite |
 | [`tarodomain-testing`](crates/tarodomain-testing) | §24 | Contract test suites that every provider must pass | Done (Phase 4) |
 | `tarodomain-cloudflare` | §24.2–24.3, §26.1, §27.2 | Cloudflare provider on workers-rs: D1, Queues, Cron Triggers, and the Worker entry points | Planned (Phase 10) |
 | `tarodomain-sqlx` | §24, §27 | SQLite and PostgreSQL provider on sqlx, for servers outside Cloudflare | Planned (Phase 11) |
 | `tarodomain-axum` | §26 | Native HTTP entry point and worker loop | Planned (Phase 12) |
-| `examples/bank-account` | — | The BankAccount / TransferMoney example used throughout the spec | Planned (Phase 9) |
+| `examples/bank-account` | — | The BankAccount / TransferMoney example used throughout the spec | Done |
 | `examples/bank-account-worker` | — | The same example deployed as a Cloudflare Worker | Planned (Phase 10) |
 
 `tarodomain` must stay platform-agnostic: it never depends on a provider, a database driver or an HTTP framework. It also builds for `wasm32-unknown-unknown`, the target Cloudflare Workers run.

@@ -1,0 +1,29 @@
+[package]
+name = "bank-account"
+description = "The TaroDomain spec's BankAccount / TransferMoney example, on the local provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "bank_account"
+
+[[bin]]
+name = "bank-account"
+path = "src/main.rs"
+
+# The library is the domain. It builds for wasm32 too, because the example
+# worker (Phase 10) reuses it, so it takes no runtime of its own.
+[dependencies]
+serde.workspace = true
+tarodomain.workspace = true
+tarodomain-local.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[dev-dependencies]
+chrono.workspace = true
+
+[lints]
+workspace = true

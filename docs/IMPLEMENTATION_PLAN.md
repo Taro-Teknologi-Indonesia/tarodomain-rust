@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–8 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 9.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–9 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 10.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -119,7 +119,7 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | `loadTimedOut(threshold, { maxCount })` (§19.1) | `load_timed_out(before, SagaQuery { saga_type, limit })`. **(Dart)** | With one scheduler per saga type (§19.3), filtering after the query would let other types fill the limit. |
 | `UnitOfWork` `begin` / `commit` / `rollback` (§11.4) | Kept, plus `execute(work)`. A provider returns a new unit from each `create_unit_of_work()`, and `execute` makes it the task's active unit (task-local), which adapters downcast to find their transaction. A nested `execute`, or a strong dispatch inside one, joins the active unit and isn't retried on its own. **(Dart)** | A saga dispatching from inside a strong command has to share its transaction. After a conflict the outer one restarts. |
 | `Framework.build() → Promise<Framework>` (§25) | `build().await -> Result<TaroDomain>`. One runtime per process; the provider (for example an sqlx pool) is shared. | Unlike Serverpod, Rust needs no per-request session, so the Dart port's definition/runtime split isn't needed. |
-| `fetchHandler` / `queueHandler` / `scheduledHandler` (§25.2, §26) | The core exposes `dispatch`, `handle_events` (queue consumer), `run_scheduled` (catch-up, then saga timeouts), `run_cleanup` (the §14 and §21 retention) and `HttpApi`, which maps plain request and response structs to the §26.1 routes. `CloudflareWorker` connects fetch, queue and scheduled to them. `tarodomain-axum` serves `HttpApi` natively, and `framework::Worker` runs the scheduled jobs on intervals. | The core stays free of HTTP frameworks and platform code, and both hosts share one route table. |
+| `fetchHandler` / `queueHandler` / `scheduledHandler` (§25.2, §26) | The core exposes `dispatch`, `handle_events` (queue consumer, taking `QueueMessage { event, attempts }` so the retry delay can depend on the delivery count), `run_scheduled` (catch-up, then saga timeouts), `run_cleanup` (the §14 and §21 retention) and `HttpApi`, which maps plain request and response structs to the §26.1 routes. `CloudflareWorker` connects fetch, queue and scheduled to them. `tarodomain-axum` serves `HttpApi` natively, and `framework::Worker` runs the scheduled jobs on intervals. | The core stays free of HTTP frameworks and platform code, and both hosts share one route table. |
 | `CommandHandler` receives the typed command (§4.1) | Registered commands must be `Clone`: the registry holds commands as `AnyCommand` (a shared payload) and builds a `CommandMessage<C>` for each attempt. | `Command` itself stays free of `Clone`, and only commands that are dispatched need it. |
 | `Token<T>` / `Container` (§23) | `Token<T>` is a `const` with a name and `PhantomData<T>`. Values are stored as `Arc<dyn Any + Send + Sync>`, and `resolve` returns `Arc<T>`. | Type-safe resolution without reflection. |
 | TS type helpers `defineEvents`, `ProjectionOf`, `SagaOf` (§29.3) | Not needed: event family enums and route tables cover them. | |
@@ -528,56 +528,73 @@ Files: `crates/tarodomain/tests/catch_up.rs`, `crates/tarodomain/tests/dead_lett
 - [x] Fixtures: `TransferSaga` gains a `compensate_when::<SagaTimeout>` route (undo the transfer), and `QuietSaga` has no timeout route
 - [x] Mutations (a compensating saga sent to the handler; no idempotency reset on rebuild) each fail tests
 
-### Phase 9: DI, builder, validation, runtime and HTTP API (§23, §25, §26.1, §29)
+### Phase 9: DI, builder, validation, runtime and HTTP API (§23, §25, §26.1, §29) (done 2026-11-16)
 
 #### Step 9.1: DI container
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/di.rs`
-- [ ] `Token<T>` and `Container` with `bind`, `bind_singleton`, `bind_transient`, `bind_scoped`, `bind_instance`, `resolve`, `resolve_or_none`, `has` and `create_scope` (§23.2)
-- [ ] A singleton is created with the container it was bound on; scoped and transient values with the container they are resolved from **(Dart)**
-- [ ] `MISSING_DEPENDENCY`; `CIRCULAR_DEPENDENCY` with the path, detected across scopes **(Dart)**
+- [x] `Token<T>` and `Container` with `bind`, `bind_singleton`, `bind_transient`, `bind_scoped`, `bind_instance`, `resolve`, `resolve_or_none`, `has` and `create_scope` (§23.2)
+- [x] A singleton is created with the container it was bound on; scoped and transient values with the container they are resolved from **(Dart)**
+- [x] `MISSING_DEPENDENCY`; `CIRCULAR_DEPENDENCY` with the path, detected across scopes **(Dart)**
+- [x] Tests: every lifetime, singleton owner vs. scope, later bindings seen by scopes, trait-object tokens, cycle path (also across scopes), a failed factory isn't cached
+- [x] A factory is synchronous and holds no lock; a singleton raced by two threads keeps the first result
 
 #### Step 9.2: Validation
 Files: `crates/tarodomain/Cargo.toml`, `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/validation.rs`
-- [ ] Dependency: `tracing` (the default sink for warnings)
-- [ ] `FrameworkValidator` (§29.1) reports every error at once in one `INVALID_CONFIGURATION`: duplicate aggregates, commands, sagas or projections; a state aggregate without a repository; a saga without `starts_when`; a non-positive timeout; a handler for an unregistered event
-- [ ] Warnings go to a callback: a saga that never completes, a `SagaTimeout` handler without a timeout
-- [ ] `DispatchGuard` (§29.2): `validate_command`, `validate_event`, and `validate_projection_dispatch` in `Skip`, `Warn` or `Strict` mode
-
+- [x] Dependency: `tracing` (the default sink for warnings)
+- [x] `FrameworkValidator` (§29.1) reports every error at once in one `INVALID_CONFIGURATION`: duplicate aggregates, commands, sagas or projections; a state aggregate without a repository; a saga without `starts_when`; a non-positive timeout; a handler for an unregistered event
+- [x] Warnings go to a callback: a saga that never completes, a `SagaTimeout` handler without a timeout
+- [x] `DispatchGuard` (§29.2): `validate_command`, `validate_event`, and `validate_projection_dispatch` in `Skip`, `Warn` or `Strict` mode
+- [x] `ValidationInput` is plain data (lists, so duplicates are visible), built by the builder after it creates the projections. `ValidationReport::finish(hook)` sends warnings to the hook and returns one `INVALID_CONFIGURATION` with the problems in its `errors` context
+- [x] Beyond the plan: a projection that routes no event is an error (§29.1), and `SagaTimeout` needs no event registration
+- [x] `DispatchGuard::validate_projection_dispatch` takes the projection's handled events. Default mode is `Skip`; `Strict` fails with `MISSING_EVENT_HANDLER`
 #### Step 9.3: Builder
 Files: `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/builder.rs`, `crates/tarodomain/src/framework/aggregate_config.rs`
-- [ ] The §25.1 DSL: `use_provider`, `consistency(mode, transport)`, `snapshot_every`, `aggregate::<A>(|a| a.event_sourced().snapshot_every(n))` or `.state(repository_factory)`, `event::<E>()`, `upcaster(…)`, `command::<C>(factory, consistency)`, `projection(factory)`, `saga::<P>(SagaOptions { timeout })`, the `bind_*` methods, `validation(projection_mode)`, `skip_validation`
-- [ ] Also `on_warning`, `concurrency`, `clock`, `sleeper`, `catch_up_batch_size`, `catch_up_max_attempts`. An explicit `clock` or `sleeper` overrides the provider's
-- [ ] Every repository's `on_snapshot_error` and `on_publish_error` (Step 5.3) go to `on_warning`, which defaults to `tracing`. They are no-ops until then
-- [ ] The global `snapshot_every` applies to every event-sourced aggregate. Setting it explicitly on a state aggregate logs a warning
-
+- [x] The §25.1 DSL: `use_provider`, `consistency(mode, transport)`, `snapshot_every`, `aggregate::<A>(|a| a.event_sourced().snapshot_every(n))` or `.state(repository_factory)`, `event::<E>()`, `upcaster(…)`, `command::<C>(factory, consistency)`, `projection(factory)`, `saga::<P>(SagaOptions { timeout })`, the `bind_*` methods, `validation(projection_mode)`, `skip_validation`
+- [x] Also `on_warning`, `concurrency`, `clock`, `sleeper`, `catch_up_batch_size`, `catch_up_max_attempts`. An explicit `clock` or `sleeper` overrides the provider's
+- [x] Every repository's `on_snapshot_error` and `on_publish_error` (Step 5.3) go to `on_warning`, which defaults to `tracing`. They are no-ops until then
+- [x] The global `snapshot_every` applies to every event-sourced aggregate. Setting it explicitly on a state aggregate logs a warning
+- [x] `AggregateConfig` is a by-value builder (`|a| a.event_sourced().snapshot_every(100)`), because a closure can't return a borrow of its argument. An aggregate registers its own event family, so `event::<E>()` and `events::<F>()` are only for other events
+- [x] `command::<C, H>(|container, context| handler, mode)`; `projection(|container| Ok(Arc<P>))`; `saga::<P>(SagaOptions { timeout })`
+- [x] The default consistency is **strong** (a provider always has the stores it needs; eventual needs a queue)
+- [x] `build()` is in `taro_domain.rs` (Step 9.4)
 #### Step 9.4: Runtime
 Files: `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/taro_domain.rs`, `crates/tarodomain/tests/framework.rs`
-- [ ] `build().await -> Result<TaroDomain>`: initializes the provider and wires two buses, two repositories per aggregate, two pipelines, projections and sagas on the strong bus, the cron dispatcher, the timeout schedulers, and a container with the framework and provider bound
-- [ ] `dispatch`, `dispatch_all`, `handle_events(Vec<SerializedEvent>)` (the queue consumer, §10.5, with an ack / retry / dead-letter outcome per message), `run_scheduled()` (catch-up, then saga timeouts), `consistency_for::<C>()`, and accessors for `di`, `event_store`, both buses, `commands` and `cron` (§25.2)
-- [ ] `run_cleanup()`: deletes processed commands older than 7 days, and processed events and dead letters older than 30 (§14, §21). `migrate()` runs `Provider::initialize()` again
-- [ ] A provider without a unit of work, when any command needs strong consistency, is `INVALID_CONFIGURATION`
-
+- [x] `build().await -> Result<TaroDomain>`: initializes the provider and wires two buses, two repositories per aggregate, two pipelines, projections and sagas on the strong bus, the cron dispatcher, the timeout schedulers, and a container with the framework and provider bound
+- [x] `dispatch`, `dispatch_all`, `handle_events(Vec<SerializedEvent>)` (the queue consumer, §10.5, with an ack / retry / dead-letter outcome per message), `run_scheduled()` (catch-up, then saga timeouts; `run_timeouts()` runs only the timeouts), `consistency_for::<C>()`, and accessors for `di`, `event_store`, both buses, `commands` and `cron` (§25.2)
+- [x] `run_cleanup()`: deletes processed commands older than 7 days, and processed events and dead letters older than 30 (§14, §21). `migrate()` runs `Provider::initialize()` again
+- [x] A provider without a unit of work, when any command needs strong consistency, is `INVALID_CONFIGURATION`
+- [x] Projections and sagas also register with the cron dispatcher, so catch-up delivers what the queue didn't. In `Warn` and `Strict` mode a projection is wrapped in the dispatch guard
+- [x] `handle_events` takes `QueueMessage { event, attempts }` (a bare `SerializedEvent` converts, with attempts 1), because the retry delay depends on the delivery count that Queues report. Outcomes: `Ack`, `Retry { delay }`, `DeadLettered` (filed under `event-queue`)
+- [x] `TARO_DOMAIN` and `PROVIDER` tokens bind the framework and provider in the container. `TaroDomain` is a cheap-clone handle, so the container holding it is a reference cycle that lives as long as the process
+- [x] Every dispatch, queue and scheduled call runs with the framework's clock in scope
+- [x] Tests (`tests/framework.rs`, 18): strong and eventual flow, queue consumer retry and dead letter, catch-up without double counting, cleanup with a manual clock, validation, no unit of work, strict projections
 #### Step 9.5: HTTP API
 Files: `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/http.rs`, `crates/tarodomain/tests/http_api.rs`
-- [ ] `HttpApi::new(framework)` handles plain `HttpRequest { method, path, headers, body }` and returns `HttpResponse { status, headers, body }`. No HTTP crate, so the Cloudflare and axum hosts each convert in a few lines
-- [ ] The §26.1 routes: `POST /commands/{name}` (JSON body through `CommandRegistry::deserialize`; `x-request-id` becomes the correlation ID), `GET /health`, `POST /migrate`. Migrate is off unless `allow_migrate(true)`
-- [ ] Errors are rendered with `to_http_response` (§22.3). An unknown route is 404, and a wrong method is 405
-- [ ] Tests on the local provider: a dispatch, a domain error with its context, an infrastructure error without it, migrate off by default
-
+- [x] `HttpApi::new(framework)` handles plain `HttpRequest { method, path, headers, body }` and returns `HttpResponse { status, headers, body }`. No HTTP crate, so the Cloudflare and axum hosts each convert in a few lines
+- [x] The §26.1 routes: `POST /commands/{name}` (JSON body through `CommandRegistry::deserialize`; `x-request-id` becomes the correlation ID), `GET /health`, `POST /migrate`. Migrate is off unless `allow_migrate(true)`
+- [x] Errors are rendered with `to_http_response` (§22.3). An unknown route is 404, and a wrong method is 405
+- [x] Tests on the local provider: a dispatch, a domain error with its context, an infrastructure error without it, migrate off by default
+- [x] `x-command-id` (a UUID) sets the command ID, so a client can retry a request and get `duplicate`. An unknown command is 404 and not the error's 500
+- [x] Bodies are `String` and `Value` (JSON); header names are lower-case
 #### Step 9.6: Bank example, domain
 Files: `Cargo.toml`, `examples/bank-account/Cargo.toml`, `examples/bank-account/src/lib.rs`, `examples/bank-account/src/account.rs`, `examples/bank-account/src/transfer.rs`
-- [ ] Workspace member added
-- [ ] `BankAccount` (open, deposit, withdraw, which raises `WithdrawalRejected` when funds are short) and `MoneyTransfer` (request, complete, fail), with typed IDs, commands and handlers
-- [ ] A custom domain error code (`INSUFFICIENT_FUNDS`)
-- [ ] The library builds for wasm32 (`cargo check --target wasm32-unknown-unknown -p bank-account --lib`), because the example worker reuses it. Its `tarodomain-local` dependency and the binary's tokio runtime (`current_thread`) must not break that
-
+- [x] Workspace member added
+- [x] `BankAccount` (open, deposit, withdraw, which raises `WithdrawalRejected` when funds are short) and `MoneyTransfer` (request, complete, fail), with typed IDs, commands and handlers
+- [x] A custom domain error code (`INSUFFICIENT_FUNDS`)
+- [x] The library builds for wasm32 (`cargo check --target wasm32-unknown-unknown -p bank-account --lib`), because the example worker reuses it. Its `tarodomain-local` dependency and the binary's tokio runtime (`current_thread`) must not break that
+- [x] Events carry their `account` ID, because an event doesn't know its stream and a projection needs the key
+- [x] `Withdraw` refuses with `WithdrawalRejected` (which the saga reacts to), or with `INSUFFICIENT_FUNDS` when its `strict` flag is set. Also `INVALID_AMOUNT` and `ACCOUNT_ALREADY_EXISTS`
+- [x] `tarodomain-local` and tokio (`macros`, `rt`) are added to the crate in Step 9.7, when the binary uses them: cargo warns about unused dependencies. The wasm32 check passes with them
 #### Step 9.7: Bank example, saga, projection and scenario
 Files: `examples/bank-account/src/lib.rs`, `examples/bank-account/src/saga.rs`, `examples/bank-account/src/projection.rs`, `examples/bank-account/src/main.rs`, `examples/bank-account/tests/bank.rs`
-- [ ] `TransferSaga` with a `refund` compensation and a `SagaTimeout` handler; `BalanceProjection`; `register_bank(builder)`
-- [ ] `BalanceProjection` writes through a small `BalanceStore` trait with idempotent upserts and increments (§14.3), so the example worker can back it with D1 (Step 10.9). The in-memory store lives here
-- [ ] `cargo run -p bank-account` runs the spec scenario: open, deposit, transfer saga, projection query, correlation trace
-- [ ] Tests in both modes, including a failed transfer, a projection rebuild and the timeout refund
-
+- [x] `TransferSaga` with a `refund` compensation and a `SagaTimeout` handler; `BalanceProjection`; `register_bank(builder)`
+- [x] `BalanceProjection` writes through a small `BalanceStore` trait with idempotent upserts and increments (§14.3), so the example worker can back it with D1 (Step 10.9). The in-memory store lives here
+- [x] `cargo run -p bank-account` runs the spec scenario: open, deposit, transfer saga, projection query, correlation trace
+- [x] Tests in both modes, including a failed transfer, a projection rebuild and the timeout refund
+- [x] The saga registers `refund` when the withdrawal is confirmed (not when it is sent, or a refused withdrawal would be refunded). `TransferFailed` and `TransferCompleted` both end the saga (`completed_when`), so a rolled-back transfer is `Completed` with phase `rolled_back`
+- [x] The timeout test stalls the saga with a second `SagaEventHandler` whose commands are discarded (as `tests/timeout.rs` does), then `run_timeouts()` refunds and fails the transfer. `TaroDomain::run_timeouts` is new for this: `run_scheduled` would catch up first and finish the transfer
+- [x] Tests (`tests/bank.rs`, 8) run transfers, failures and the trace in both modes. `cargo run -p bank-account` prints balances and the trace tree
+- [x] `register_bank(builder, store)` registers everything; the caller picks the provider, mode and store
 ### Phase 10: Cloudflare provider, `tarodomain-cloudflare` (§24.2–24.3, §26.1, §27.2)
 
 Needs Node.js for `wrangler` from Step 10.8 on. Every D1 adapter step is tested natively on SQLite through the backend of Step 10.2, and Step 10.8 runs the same suites on D1 itself.

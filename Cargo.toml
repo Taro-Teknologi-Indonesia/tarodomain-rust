@@ -1,7 +1,12 @@
 [workspace]
 resolver = "3"
 # Members are listed explicitly; each plan step that adds a crate adds it here.
-members = ["crates/tarodomain", "crates/tarodomain-local", "crates/tarodomain-testing"]
+members = [
+    "crates/tarodomain",
+    "crates/tarodomain-local",
+    "crates/tarodomain-testing",
+    "examples/bank-account",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +21,7 @@ publish = false
 tarodomain = { path = "crates/tarodomain" }
 tarodomain-local = { path = "crates/tarodomain-local" }
 tarodomain-testing = { path = "crates/tarodomain-testing" }
+bank-account = { path = "examples/bank-account" }
 
 # Shared third-party dependencies. Crates opt in with `name.workspace = true`.
 async-trait = "0.1"
