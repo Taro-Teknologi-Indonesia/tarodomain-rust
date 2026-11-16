@@ -1,0 +1,35 @@
+[package]
+name = "tarodomain-cloudflare"
+description = "TaroDomain CloudflareProvider: D1, Queues and Cron Triggers on workers-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# SQLite behind the same backend trait, so the adapters' SQL runs natively.
+native-sqlite = ["dep:rusqlite"]
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tarodomain.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
+
+# workers-rs only exists on the Workers target. Native builds (and
+# `cargo test --workspace`) use the logic without it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker.workspace = true
+
+[dev-dependencies]
+# The crate's own tests turn the native backend on.
+tarodomain-cloudflare = { workspace = true, features = ["native-sqlite"] }
+tarodomain-testing.workspace = true
+
+[lints]
+workspace = true

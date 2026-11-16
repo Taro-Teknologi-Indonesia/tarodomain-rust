@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–9 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 10.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–9 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, 512 tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 11.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -128,6 +128,8 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | D1 `loadAll … ORDER BY event_id` (§24.3) | D1 orders by an `AUTOINCREMENT` position column. | Event IDs don't order events within one millisecond (the cursor row above). D1 runs one write at a time, so insert order is commit order and D1 needs no sequencer. |
 | D1 append: `UPDATE streams … WHERE version = expected` inside the batch (§24.3) | The unique `(stream_id, stream_version)` key detects the conflict: a stale writer inserts a version that already exists, so the batch fails and rolls back. A guard statement also fails the batch when the expected version is ahead of the stream. The error becomes `OPTIMISTIC_CONCURRENCY`. | An `UPDATE` that matches no row isn't an error, so on its own it would let the batch commit. |
 | `initialize()` runs D1 migrations; `POST /migrate` (§24.2, §26.1) | The migrations are embedded in the crate and tracked in `schema_migrations` (§27.1). `initialize()` applies any missing ones once per isolate. `POST /migrate` is off unless the app turns it on. | Deploying needs no separate migration step, and an open migrate endpoint isn't exposed by default. |
+| Queue transports and the strong bus on Cloudflare (§10.5, §24.2) | `EventBusConfig` transport `"queue"` is the queue bus (the default for eventual mode) and `"in_memory"` the in-process bus (the default for strong mode). | Strong mode must deliver inside the command's unit of work, which a queue can't do. |
+| Unit of work reads its own writes (§11.4) | The unit of work contract requires only what the framework reads back inside a unit: a stream's version and events, a saga, idempotency marks. D1 shows no more than that before the commit. | Snapshots, subscriptions, dead letters and counts are never read back inside a unit, and staging them for reading would copy half of SQL. |
 | Queue consumer: `message.retry({ delaySeconds })` (§10.5) | Same, with the delay from `RetryPolicy` and the attempt count from the message itself. | Queues already count attempts, so no extra table is needed. |
 
 ## Phases and steps
@@ -595,87 +597,84 @@ Files: `examples/bank-account/src/lib.rs`, `examples/bank-account/src/saga.rs`, 
 - [x] The timeout test stalls the saga with a second `SagaEventHandler` whose commands are discarded (as `tests/timeout.rs` does), then `run_timeouts()` refunds and fails the transfer. `TaroDomain::run_timeouts` is new for this: `run_scheduled` would catch up first and finish the transfer
 - [x] Tests (`tests/bank.rs`, 8) run transfers, failures and the trace in both modes. `cargo run -p bank-account` prints balances and the trace tree
 - [x] `register_bank(builder, store)` registers everything; the caller picks the provider, mode and store
-### Phase 10: Cloudflare provider, `tarodomain-cloudflare` (§24.2–24.3, §26.1, §27.2)
+### Phase 10: Cloudflare provider, `tarodomain-cloudflare` (§24.2–24.3, §26.1, §27.2) (code done 2026-11-16; D1 and wrangler runs open)
 
 Needs Node.js for `wrangler` from Step 10.8 on. Every D1 adapter step is tested natively on SQLite through the backend of Step 10.2, and Step 10.8 runs the same suites on D1 itself.
 
 #### Step 10.1: Crate and platform glue
 Files: `Cargo.toml`, `crates/tarodomain-cloudflare/Cargo.toml`, `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/platform.rs`, `.github/workflows/ci.yml`
-- [ ] Workspace member added. `worker` (workers-rs) becomes a workspace dependency with its D1 and Queue features, used only on wasm32
-- [ ] Code that touches `worker` sits behind `cfg(target_arch = "wasm32")`, so the crate also builds natively and `cargo test --workspace` covers its logic
-- [ ] `platform.rs`: `WorkerSleeper` on `worker::Delay`; `worker::Error` → `FrameworkError::infrastructure`; the `SendWrapper` / `SendFuture` helpers every adapter uses (design table). No `unsafe` in this crate
-- [ ] CI's wasm check covers the crate
+- [x] Workspace member added. `worker` (workers-rs) becomes a workspace dependency with its D1 and Queue features, used only on wasm32
+- [x] Code that touches `worker` sits behind `cfg(target_arch = "wasm32")`, so the crate also builds natively and `cargo test --workspace` covers its logic
+- [x] `platform.rs`: `WorkerSleeper` on `worker::Delay`; `worker::Error` → `FrameworkError::infrastructure`; the `SendWrapper` / `SendFuture` helpers every adapter uses (design table). No `unsafe` in this crate
+- [x] CI's wasm check covers the crate
 
 #### Step 10.2: Statement layer
 Files: `crates/tarodomain-cloudflare/Cargo.toml`, `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/d1.rs`, `crates/tarodomain-cloudflare/src/sqlite_backend.rs`, `crates/tarodomain-cloudflare/tests/d1_scan.rs`
-- [ ] `D1Backend` trait (`run`, `all`, `batch`) with two implementations: workers-rs's `D1Database` on wasm32, and rusqlite (`batch` is one transaction) behind a `native-sqlite` feature that the crate's own tests turn on. The adapters' real SQL then runs under `cargo test`
-- [ ] `D1Db` is the only code that runs statements. Reads run at once. Writes run at once outside a unit of work and are staged inside one (§11.4)
-- [ ] Multi-row inserts are split to fit D1's bound-parameter limit per statement
-- [ ] A constraint violation in a batch comes back as a typed error the adapters can map
-- [ ] Source-scan test: no other file under `src/` calls a backend **(Dart)**
+- [x] `D1Backend` trait (`run`, `all`, `batch`) with two implementations: workers-rs's `D1Database` on wasm32, and rusqlite (`batch` is one transaction) behind a `native-sqlite` feature that the crate's own tests turn on. The adapters' real SQL then runs under `cargo test`
+- [x] `D1Db` is the only code that runs statements. Reads run at once. Writes run at once outside a unit of work and are staged inside one (§11.4)
+- [x] Multi-row inserts are split to fit D1's bound-parameter limit per statement
+- [x] A constraint violation in a batch comes back as a typed error the adapters can map
+- [x] Source-scan test: no other file under `src/` calls a backend **(Dart)**
 
 #### Step 10.3: Unit of work and schema
-Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/unit_of_work.rs`, `crates/tarodomain-cloudflare/src/migrations.rs`, `crates/tarodomain-cloudflare/migrations/0001_init.sql`
-- [ ] `D1UnitOfWork`: `begin`, `commit` (every staged statement in one `batch`), `rollback` (drops them), a nested unit joins, `after_commit` callbacks
-- [ ] The overlay: staged events per stream, staged saga records, and staged processed-event and processed-command markers, readable by the adapters until the unit ends (design table)
-- [ ] Schema: the §27.1 tables prefixed `tarodomain_`, following §27.2. `events` has `position INTEGER PRIMARY KEY AUTOINCREMENT` and a unique `event_id`, and folds in `stream_events` (`stream_id` and `stream_version`, unique together) **(Dart)**. `subscriptions` adds `last_position`, `failed_event_id` and `failed_attempts`. Plus `locks` for job leases, and `schema_migrations`
-- [ ] `migrations.rs` embeds the SQL (`include_str!`), applies each missing migration in one `batch` and records it in `schema_migrations`. Running it twice is a no-op. When two isolates migrate at once, the loser's batch fails on the `schema_migrations` key, and it checks again instead of failing
-- [ ] Tests on SQLite: commit, rollback, reads through the overlay, migrating twice
-
+Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/d1.rs`, `crates/tarodomain-cloudflare/src/unit_of_work.rs`, `crates/tarodomain-cloudflare/src/migrations.rs`, `crates/tarodomain-cloudflare/migrations/0001_init.sql`
+- [x] `D1UnitOfWork`: `begin`, `commit` (every staged statement in one `batch`), `rollback` (drops them), a nested unit joins (the core's `execute`), `after_commit` callbacks that run only after a successful commit. `D1Db::write` stages into the active unit (`d1.rs`)
+- [x] The overlay: staged events per stream, staged saga records, and staged processed-event and processed-command markers, readable by the adapters until the unit ends (design table)
+- [x] A constraint violation at commit is `OPTIMISTIC_CONCURRENCY` (retryable, with the stream and both versions) when another writer appended to a stream the unit appended to, so two racing units are told apart as the contract asks
+- [x] Schema: eight of the §27.1 tables prefixed `tarodomain_`, following §27.2. `events` has `position INTEGER PRIMARY KEY AUTOINCREMENT` and a unique `event_id`, and folds in `stream_events` (`stream_id` and `stream_version`, unique together) **(Dart)**. `subscriptions` adds `last_position`, `failed_event_id` and `failed_attempts`. Plus `locks` for job leases. `schema_migrations` is created by `migrate` itself, because it has to exist before the first migration can be recorded
+- [x] `migrations.rs` embeds the SQL (`include_str!`), applies each missing migration in one `batch` with its record, and records it in `tarodomain_schema_migrations`. Running it twice is a no-op. When two isolates migrate at once, the loser's batch fails on the record's primary key, and it checks again instead of failing. Also `TABLES` and `clear_all` for the contract harness
+- [x] Tests on SQLite: commit, rollback, reads through the overlay, a conflict at commit, callbacks, migrating twice and concurrently
 #### Step 10.4: D1 event store adapter
-Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/event_store.rs`
-- [ ] Append in one batch, or staged in the active unit: the events with their stream versions, the stream row, and the guard statement. A constraint failure is `OPTIMISTIC_CONCURRENCY` with the stream, the expected version and the actual one (read again)
-- [ ] Stream, category and `$all` reads ordered by position. An `after_event_id` cursor resolves to its position
-- [ ] Inside a unit, stream reads and stream versions include the overlay's staged events
-- [ ] Subscriptions: idempotent subscribe, ack only moves forward, `record_failed_attempt`
-
+Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/d1.rs`, `crates/tarodomain-cloudflare/src/event_store.rs`, `crates/tarodomain-cloudflare/tests/event_store.rs`
+- [x] Append in one batch, or staged in the active unit: a guard statement, the events with their stream versions, and the stream row. The guard is an `INSERT` of a `NULL` primary key that runs only when the stream isn't at the expected version, so it fails the batch with a constraint error. A conflict is `OPTIMISTIC_CONCURRENCY` with the stream, the expected version and the actual one (read again)
+- [x] Stream, category and `$all` reads ordered by position. An `after_event_id` cursor resolves to its position, or to an ID comparison if its event was deleted
+- [x] Inside a unit, stream reads, cross-stream reads, correlation reads and stream versions include the overlay's staged events
+- [x] Subscriptions: idempotent subscribe, ack only moves forward (one `UPDATE`, in append order), `record_failed_attempt`
+- [x] `RowExt` typed column readers on `Row` (`d1.rs`), shared by every adapter
 #### Step 10.5: Other D1 adapters
 Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/snapshot_store.rs`, `crates/tarodomain-cloudflare/src/saga_store.rs`, `crates/tarodomain-cloudflare/src/idempotency.rs`, `crates/tarodomain-cloudflare/src/dead_letter.rs`
-- [ ] Idempotent writes with `ON CONFLICT DO NOTHING` / `DO UPDATE` (§14.3)
-- [ ] Inside a unit, saga loads and idempotency checks read the overlay first
-- [ ] The same semantics as the in-memory adapters
-
+- [x] Idempotent writes with `ON CONFLICT DO NOTHING` / `DO UPDATE` (§14.3)
+- [x] Inside a unit, saga loads and idempotency checks read the overlay first
+- [x] The same semantics as the in-memory adapters, checked by the contract suites in Step 10.6
+- [x] `D1Db::write_counting` and `write_returning` (`d1.rs`) give `delete_before` / `delete_old` / `delete_by_handler` their counts and `DeadLetterStore::write` its ID. A dead letter written inside a unit is staged with the unit and returns `0`, because its ID isn't known before the commit
 #### Step 10.6: Queue event bus and provider
-Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/queue_bus.rs`, `crates/tarodomain-cloudflare/src/provider.rs`, `crates/tarodomain-cloudflare/tests/contract.rs`
-- [ ] `CloudflareQueueEventBus`: `publish_all` sends `SerializedEvent`s with `send_batch`. Inside a unit of work it sends from `after_commit`, so a rolled-back batch never reaches the queue. An event over the queue's message size limit is logged and left to the cron catch-up
-- [ ] `CloudflareProvider::new(&env, bindings)` (the D1 binding name and an optional queue binding). `provider_type()` is `"cloudflare"`, `create_unit_of_work()` returns a `D1UnitOfWork`, the eventual bus is the queue bus and the strong bus an `InMemoryEventBus`, and `sleeper()` is `WorkerSleeper`
-- [ ] `initialize()` applies missing migrations once per isolate
-- [ ] `provider.db()` gives applications the same `D1Db`, so read-model writes join the unit's batch in strong mode
-- [ ] `CloudflareProvider::with_backend(backend)` for native tests, with a recording queue
-- [ ] `tests/contract.rs`: every contract suite passes on SQLite (`provider_contract_tests!`)
-
+Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/queue_bus.rs`, `crates/tarodomain-cloudflare/src/provider.rs`, `crates/tarodomain-cloudflare/tests/contract.rs`, `crates/tarodomain-testing/src/unit_of_work_contract.rs`
+- [x] `CloudflareQueueEventBus`: `publish_all` sends the `SerializedEvent`s as JSON text in batches of 100 (`EventQueue::send_batch`; `WorkerQueue` on wasm32, `RecordingQueue` in tests). Inside a unit of work it sends from `after_commit`, so a rolled-back batch never reaches the queue. An event over the queue's 128 KB message limit is logged and left to the cron catch-up. A failed send is logged, not returned (§11.2)
+- [x] `CloudflareProvider::new(&env, &Bindings)` (the D1 binding name and an optional queue binding, wasm32 only). `provider_type()` is `"cloudflare"`, `create_unit_of_work()` returns a `D1UnitOfWork`, the eventual bus is the queue bus and the strong bus an `InMemoryEventBus` (transports `"queue"` and `"in_memory"` choose either; eventual without a queue binding is `INVALID_CONFIGURATION`), and `sleeper()` is `WorkerSleeper`
+- [x] `initialize()` applies missing migrations once per provider (a Worker keeps its provider for the isolate)
+- [x] `provider.db()` gives applications the same `D1Db`, so read-model writes join the unit's batch in strong mode
+- [x] `CloudflareProvider::with_backend(backend, queue)` for native tests, with a recording queue
+- [x] `tests/contract.rs`: every contract suite passes on SQLite (`provider_contract_tests!`)
+- [x] The unit of work contract asks only for what the framework reads back inside a unit (a stream's version, a saga, idempotency marks) instead of counts of every store (design table). `crates/tarodomain-testing/src/unit_of_work_contract.rs` is the sixth file of this step, for that change
 #### Step 10.7: Worker entry points
 Files: `crates/tarodomain-cloudflare/src/lib.rs`, `crates/tarodomain-cloudflare/src/entry.rs`, `crates/tarodomain-cloudflare/src/lease.rs`
-- [ ] `CloudflareWorker::new(framework)` with `fetch`, `queue` and `scheduled`, called from a Worker crate's `#[event(...)]` functions
-- [ ] `fetch` converts `worker::Request` and `Response` to and from `HttpApi` (Step 9.5)
-- [ ] `queue`: `handle_events` on the batch, then per message `ack`, `retry_with_options` with the delay from `RetryPolicy` and `message.attempts()`, or dead-letter and `ack` for a non-retryable error (§10.5)
-- [ ] `scheduled`: the cron expression picks `run_scheduled()` (catch-up, then timeouts) or `run_cleanup()` (`cleanup_cron(…)`, daily by default). Each job holds a lease in `tarodomain_locks`, so an overlapping run skips
-- [ ] The backpressure time budget (25 s by default) stays below the Worker's CPU limit
-- [ ] Measure `build()` per request, and cache the framework per isolate if it's significant
-- [ ] Native tests of the pure parts: outcome → ack or retry, cron selection, lease expiry
-
+- [x] `CloudflareWorker::new(framework, &provider)` with `fetch`, `queue` and `scheduled`, called from a Worker crate's `#[event(...)]` functions (wasm32 only; compiles and passes clippy there)
+- [x] `fetch` converts `worker::Request` and `Response` to and from `HttpApi` (Step 9.5)
+- [x] `queue`: `consume` runs `handle_events` on the batch, then per message `ack`, or `retry_with_options` with the delay from `RetryPolicy` and `message.attempts()` (rounded up to whole seconds, at most the queue's 12 hours). A non-retryable error was already dead-lettered by `handle_events`, so its message is acknowledged; a body that isn't an event is logged and acknowledged (§10.5)
+- [x] `scheduled`: the cron expression picks `run_scheduled()` (catch-up, then timeouts) or `run_cleanup()` (`cleanup_cron(…)`, daily at 03:00 UTC by default). Each job holds a lease in `tarodomain_locks` (5 minutes at most), so an overlapping run skips
+- [x] The backpressure time budget is the core's 25 s default (Step 8.2), wall-clock time that stays well below a Worker's limits
+- [ ] Measure `build()` per request. Not measured (needs workerd). The example worker builds the framework once per isolate in a `OnceCell` instead, which makes the cost a cold-start cost only
+- [x] Native tests of the pure parts: outcome → ack or retry, cron selection, lease expiry and takeover, a held lease skipping a run, a garbage message
 #### Step 10.8: Contract harness in workerd
-Files: `Cargo.toml`, `harness/cloudflare-contract/Cargo.toml`, `harness/cloudflare-contract/src/lib.rs`, `harness/cloudflare-contract/wrangler.toml`, `scripts/cloudflare-contract.sh`
-- [ ] Workspace member added (a `cdylib` Worker)
-- [ ] `POST /suites/{name}` runs one `tarodomain-testing` suite against `CloudflareProvider` on a local D1 that it empties first. A panic becomes a 500 with the message
-- [ ] The script builds the harness, starts `wrangler dev` (local mode, no Cloudflare account needed), calls every suite, and exits non-zero on any failure
-- [ ] Every suite passes on D1 itself, confirming the SQLite runs of Step 10.6
-
+Files: `Cargo.toml`, `crates/tarodomain-cloudflare/src/migrations.rs`, `harness/cloudflare-contract/Cargo.toml`, `harness/cloudflare-contract/src/lib.rs`, `harness/cloudflare-contract/wrangler.toml`, `scripts/cloudflare-contract.sh`
+- [x] Workspace member added; this step touches six files, one over the limit, because the harness needs `clear_all` in `migrations.rs` (a `cdylib` Worker; empty natively, so `cargo test --workspace` still builds). It compiles and passes clippy for wasm32
+- [x] `POST /suites/{name}` runs one `tarodomain-testing` suite against `CloudflareProvider` on a local D1 that it empties first (`clear_all`, before each case). A failed assertion panics, the panic hook writes the message to the log, and the request fails; the script prints the log. (Not a 500 with the message: a panic is a trap on wasm32, which can't be caught)
+- [x] `scripts/cloudflare-contract.sh` builds the harness, starts `wrangler dev` (local mode, no Cloudflare account needed) in a temp dir, calls every suite, and exits non-zero on any failure. Syntax checked (`bash -n`)
+- [ ] Every suite passes on D1 itself, confirming the SQLite runs of Step 10.6. **Not run: Node.js isn't installed on the dev machine.** CI's `workers` job runs it
 #### Step 10.9: Example worker
 Files: `Cargo.toml`, `examples/bank-account-worker/Cargo.toml`, `examples/bank-account-worker/src/lib.rs`, `examples/bank-account-worker/wrangler.toml`, `examples/bank-account-worker/README.md`
-- [ ] Workspace member added
-- [ ] The bank domain from `examples/bank-account` behind `CloudflareWorker`, with a D1 `BalanceStore` that writes through `provider.db()`
-- [ ] `wrangler.toml`: the D1 binding, the queue as producer and consumer (with a Cloudflare dead-letter queue as a last resort), and two cron triggers (catch-up every minute, cleanup daily). It is the template to copy, replacing §26.3's generators
-- [ ] README: `npx wrangler dev`, a curl walkthrough in which an eventual deposit reaches the projection through the queue, and deploying (`wrangler d1 create`, `wrangler queues create`, `wrangler deploy`)
-- [ ] The README records the compressed bundle size against the Workers limit (Risks: Worker size)
-
+- [x] Workspace member added
+- [x] The bank domain from `examples/bank-account` behind `CloudflareWorker`, with a D1 `BalanceStore` that writes through `provider.db()`. Its upserts and increments are tested natively on SQLite, including a strong-mode run in which the projection commits with the events. The framework is built once per isolate; `/balances` shows the read model; `CONSISTENCY` picks strong or eventual
+- [x] `wrangler.toml`: the D1 binding, the queue as producer and consumer (with a Cloudflare dead-letter queue as a last resort), and two cron triggers (catch-up every minute, cleanup daily). It is the template to copy, replacing §26.3's generators
+- [x] README: `npx wrangler dev`, a curl walkthrough in which an eventual deposit reaches the projection through the queue, and deploying (`wrangler d1 create`, `wrangler queues create`, `wrangler deploy`)
+- [ ] The walkthrough hasn't been run: **Node.js isn't installed on the dev machine**
+- [x] The README records the compressed bundle size against the Workers limit (Risks: Worker size): 678 KB gzipped before `wasm-bindgen` and `wasm-opt`, against 3 MB on the Free plan
 #### Step 10.10: Workers CI
 Files: `.github/workflows/ci.yml`, `README.md`
-- [ ] The wasm check adds `tarodomain-testing`, the harness and the example worker
-- [ ] A `workers` job: Node, `worker-build`, then `scripts/cloudflare-contract.sh`
-- [ ] README: crate table status, and a Cloudflare development section
-- [ ] CI green
-
+- [x] The wasm check adds `tarodomain-testing`, the harness, `bank-account` and the example worker
+- [x] A `workers` job: Node, `worker-build`, then `scripts/cloudflare-contract.sh`
+- [x] README: crate table status, and a Cloudflare development section
+- [ ] CI green. Not run yet: nothing is pushed, and CI hasn't been checked since Phase 1
 ### Phase 11: SQL provider, `tarodomain-sqlx` (§24, §27)
 
 #### Step 11.1: Crate and schema

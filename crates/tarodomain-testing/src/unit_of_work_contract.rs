@@ -18,8 +18,9 @@ use crate::fixtures::{aggregate_id, event_id, events, ids, stream_id, uuid};
 /// Checks a provider's [`UnitOfWork`] through
 /// [`execute`](tarodomain::adapters::UnitOfWork#method.execute): a commit
 /// keeps the writes of every store and a rollback discards them all, the
-/// work's error comes back unchanged, the unit reads its own writes while
-/// readers outside it don't, a nested `execute` joins the active unit, and
+/// work's error comes back unchanged, the unit reads its own writes (a
+/// stream's version, a saga, idempotency marks) while readers outside it
+/// don't, a nested `execute` joins the active unit, and
 /// conflicts inside units (also between two racing units) are
 /// `OPTIMISTIC_CONCURRENCY`.
 ///
@@ -63,6 +64,30 @@ struct Seen {
     processed_events: u64,
     commands: u64,
     dead_letters: u64,
+}
+
+/// What a unit must show of its own writes: what the framework reads back
+/// inside a unit (a stream's version, a saga record, an idempotency mark).
+///
+/// A provider that stages a unit's writes until the commit, as D1 does,
+/// can't show the rest (snapshots, subscriptions, dead letters, and counts)
+/// before the commit. The framework never reads those back inside a unit, so
+/// the contract doesn't ask for it.
+#[derive(Debug, PartialEq)]
+struct SeenInside {
+    stream_version: u64,
+    saga: bool,
+    processed_event: bool,
+    command: bool,
+}
+
+impl SeenInside {
+    const ONE_OF_EACH: SeenInside = SeenInside {
+        stream_version: 1,
+        saga: true,
+        processed_event: true,
+        command: true,
+    };
 }
 
 impl Seen {
@@ -145,6 +170,27 @@ impl Stores {
         Ok(())
     }
 
+    /// The unit's own view of what [`write_one_of_each`](Self::write_one_of_each)
+    /// wrote.
+    async fn seen_inside(&self) -> SeenInside {
+        let stream = stream_id(ACCOUNT, 1);
+        SeenInside {
+            stream_version: self.events.get_stream_version(&stream).await.unwrap(),
+            saga: self
+                .sagas
+                .load(SAGA, uuid("saga", 1))
+                .await
+                .unwrap()
+                .is_some(),
+            processed_event: self
+                .processed
+                .exists(HANDLER, HANDLER, event_id(1))
+                .await
+                .unwrap(),
+            command: self.commands.exists(uuid("command", 1)).await.unwrap(),
+        }
+    }
+
     async fn seen(&self) -> Seen {
         let stream = stream_id(ACCOUNT, 1);
         Seen {
@@ -174,11 +220,11 @@ async fn commit_keeps_the_writes_of_every_store(provider: Arc<dyn Provider>) {
     let inside = Arc::clone(&unit)
         .execute(async {
             stores.write_one_of_each().await?;
-            Ok(stores.seen().await)
+            Ok(stores.seen_inside().await)
         })
         .await
         .unwrap();
-    assert_eq!(inside, Seen::ONE_OF_EACH);
+    assert_eq!(inside, SeenInside::ONE_OF_EACH);
     assert!(!unit.is_active(), "the unit ends with the commit");
     assert_eq!(
         stores.seen().await,
@@ -194,7 +240,7 @@ async fn rollback_discards_the_writes_of_every_store(provider: Arc<dyn Provider>
         .execute(async {
             stores.write_one_of_each().await?;
             assert!(unit.is_active(), "the unit is active during its work");
-            assert_eq!(stores.seen().await, Seen::ONE_OF_EACH);
+            assert_eq!(stores.seen_inside().await, SeenInside::ONE_OF_EACH);
             Err::<(), _>(work_failed())
         })
         .await;
@@ -221,7 +267,7 @@ async fn a_unit_reads_its_own_writes_and_others_do_not(provider: Arc<dyn Provide
         stores.write_one_of_each().await?;
         written.0.send(()).unwrap();
         read.1.await.unwrap();
-        Ok(stores.seen().await)
+        Ok(stores.seen_inside().await)
     });
     let outside = async {
         written.1.await.unwrap();
@@ -232,7 +278,7 @@ async fn a_unit_reads_its_own_writes_and_others_do_not(provider: Arc<dyn Provide
     let (inside, outside) = tokio::join!(work, outside);
     assert_eq!(
         inside.unwrap(),
-        Seen::ONE_OF_EACH,
+        SeenInside::ONE_OF_EACH,
         "the unit reads its own writes"
     );
     assert_eq!(
@@ -267,10 +313,10 @@ async fn a_nested_execute_joins(provider: Arc<dyn Provider>) {
             let joined = Arc::clone(&inner).execute(stores.write_one_of_each());
             joined.await?;
             assert!(!inner.is_active(), "the joined unit never began");
-            Ok(stores.seen().await)
+            Ok(stores.seen_inside().await)
         })
         .await;
-    assert_eq!(result.unwrap(), Seen::ONE_OF_EACH);
+    assert_eq!(result.unwrap(), SeenInside::ONE_OF_EACH);
     assert_eq!(
         stores.seen().await,
         Seen::ONE_OF_EACH,

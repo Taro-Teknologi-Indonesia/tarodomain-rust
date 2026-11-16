@@ -1,0 +1,40 @@
+# The bank example as a Cloudflare Worker. Copy this file and adjust the names.
+name = "bank-account-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-11-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[vars]
+# "eventual" (a Queue delivers events to the projection) or "strong" (the
+# projection runs inside the command's D1 batch).
+CONSISTENCY = "eventual"
+
+# D1 stores the events, sagas and read models. Create it with
+# `npx wrangler d1 create tarodomain-bank` and paste its ID here. `wrangler dev`
+# keeps a local copy and doesn't need the ID to be real.
+[[d1_databases]]
+binding = "DB"
+database_name = "tarodomain-bank"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# Events are produced to the queue and consumed by this same Worker.
+[[queues.producers]]
+binding = "EVENTS"
+queue = "tarodomain-bank-events"
+
+[[queues.consumers]]
+queue = "tarodomain-bank-events"
+max_batch_size = 10
+max_batch_timeout = 2
+max_retries = 5
+# Cloudflare's own dead-letter queue: the last resort. The framework dead-letters
+# non-retryable failures into D1 first (§21).
+dead_letter_queue = "tarodomain-bank-events-dlq"
+
+[triggers]
+# Catch-up and saga timeouts every minute; cleanup (§14, §21) daily at 03:00 UTC.
+# The cleanup expression must match `CloudflareWorker::cleanup_cron`
+# (the default is "0 3 * * *").
+crons = ["* * * * *", "0 3 * * *"]

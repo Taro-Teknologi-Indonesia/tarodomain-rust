@@ -1,0 +1,33 @@
+[package]
+name = "bank-account-worker"
+description = "The bank example on Cloudflare Workers: D1, Queues and Cron Triggers. The template to copy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bank-account.workspace = true
+serde_json.workspace = true
+tarodomain.workspace = true
+tarodomain-cloudflare.workspace = true
+tokio.workspace = true
+
+# The Worker glue only exists on wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+worker.workspace = true
+
+[dev-dependencies]
+tarodomain-cloudflare = { workspace = true, features = ["native-sqlite"] }
+
+[lints]
+workspace = true
+
+# Smaller and faster to start: see the README's bundle-size table.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-bulk-memory"]

@@ -3,9 +3,12 @@ resolver = "3"
 # Members are listed explicitly; each plan step that adds a crate adds it here.
 members = [
     "crates/tarodomain",
+    "crates/tarodomain-cloudflare",
     "crates/tarodomain-local",
     "crates/tarodomain-testing",
+    "harness/cloudflare-contract",
     "examples/bank-account",
+    "examples/bank-account-worker",
 ]
 
 [workspace.package]
@@ -19,9 +22,11 @@ publish = false
 [workspace.dependencies]
 # Internal crates
 tarodomain = { path = "crates/tarodomain" }
+tarodomain-cloudflare = { path = "crates/tarodomain-cloudflare" }
 tarodomain-local = { path = "crates/tarodomain-local" }
 tarodomain-testing = { path = "crates/tarodomain-testing" }
 bank-account = { path = "examples/bank-account" }
+bank-account-worker = { path = "examples/bank-account-worker" }
 
 # Shared third-party dependencies. Crates opt in with `name.workspace = true`.
 async-trait = "0.1"
@@ -33,6 +38,7 @@ sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1"
+worker = { version = "0.9", default-features = false, features = ["d1", "queue"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 
 [workspace.lints.rust]

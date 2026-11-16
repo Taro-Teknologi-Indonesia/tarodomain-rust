@@ -25,7 +25,27 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       # Crates that run on Cloudflare Workers must build for wasm32 (plan step 0.4).
-      - run: cargo check --target wasm32-unknown-unknown -p tarodomain
+      - run: >
+          cargo check --target wasm32-unknown-unknown
+          -p tarodomain -p tarodomain-testing -p tarodomain-cloudflare
+          -p cloudflare-contract-harness -p bank-account -p bank-account-worker
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # The contract suites on D1 itself, inside workerd (plan Step 10.8).
+  workers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo install worker-build --locked
+      - run: scripts/cloudflare-contract.sh
