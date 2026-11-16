@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–4 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phases 2–4 pass every check locally and haven't been pushed yet. Next is Step 5.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–5 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phases 2–5 pass every check locally and haven't been pushed yet. Next is Step 6.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -104,6 +104,8 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | `toSnapshot()` from own enumerable properties, `#private` key (§5.4) | `type Snapshot: Serialize + DeserializeOwned` with required `snapshot_state()` and `restore_snapshot_state()`. There is no `#private` key. **(Dart)** | No reflection over fields. Making both methods required means the global `snapshot_every` never silently skips an aggregate. |
 | `loadFromHistory(events, snapshotVersion?)` (§5.1) | `load_from_history(events)` continues from the current version, which `restore_snapshot` sets. **(Dart)** | Only one place sets the version. |
 | Snapshot when `newVersion % snapshotEvery == 0` (§6.2) | Snapshot when a save *crosses* a multiple of `snapshot_every`. **(Dart)** | A save of several events can jump over the exact multiple. |
+| `repo.save()` publishes after the append, and a failure fails the save (§6.2, §11.2) | Inside a unit of work, a publish failure fails the save, and the unit's rollback undoes the append. Outside one, the append is already durable, so the failure goes to the repository's `on_publish_error` hook and the save succeeds; the catch-up dispatcher delivers the events from the store. | §11.2: "If enqueue fails, events are in store — cron catches up." Failing the save would make the caller retry a change that is already stored, and the retry would apply it twice. A state-stored aggregate's events aren't in the store, so nothing redelivers them; its rustdoc says to run such commands in strong mode. |
+| `StateRepository<T>` base class with `save` and `loadOrNull`; the user implements `load` (throwing), `saveState`, `exists` (§6.3) | The user implements `StateRepository<A>`: `load` returning `Option<A>`, `save_state`, and `exists` (provided on `load`). The framework's `StateStoredRepository<A>` wraps it with a bus and is the `Repository<A>`, so `save`, `load` (`AGGREGATE_NOT_FOUND`) and `load_or_none` live there. | One user repository serves both pipelines' buses (§11.3), and the user never handles a bus. Returning `None` is simpler than building a not-found error. |
 | `CommandHandler<C, A>` with `aggregateType` and an event bus constructor parameter (§4.1) | `CommandHandler<C>` with only `handle`. Repositories come from `CommandContext::repository::<A>()`, which builds them on the running pipeline's bus. **(Dart)** | A handler may touch several aggregates or none, and which bus applies depends on the pipeline (§11.3). |
 | `CommandDispatcher.resolve` returns a handler (§4.2) | `resolve` returns the registration. The pipeline creates a fresh handler for each attempt. **(Dart)** | The handler instance depends on the pipeline's bus. |
 | `Projection<TDb>` with a `db` property (§12.1) | `Projection` has no type parameter; each projection owns its storage. **(Dart)** | The framework never touches the read model. |
@@ -368,31 +370,31 @@ Files: `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/pr
 - [x] The local provider passes every suite (`crates/tarodomain-local/tests/contract.rs`), also with its database's clock stopped, which shows the suites rely on no time passing. Mutations (cursor reads by ID instead of position; a rollback that commits) fail the event store, concurrency and unit of work suites
 - [x] README: crate status
 
-### Phase 5: Event sourcing (§3.3–3.4, §6, §7)
+### Phase 5: Event sourcing (§3.3–3.4, §6, §7) (done 2026-11-16)
 
 #### Step 5.1: Event registry and upcasters
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/event_sourcing/mod.rs`, `crates/tarodomain/src/event_sourcing/registry.rs`, `crates/tarodomain/src/domain/family.rs`
-- [ ] `register::<E>()` at `E::VERSION`. A second registration of the same name is `DUPLICATE_EVENT_REGISTRATION`
-- [ ] `register_upcaster(name, from, to, fn(Value) -> Result<Value>)`. Upcasters apply one step at a time up to the registered version; a gap in the chain is `EVENT_VERSION_MISMATCH`
-- [ ] `deserialize(&SerializedEvent) -> Result<DomainEvent>`: an unknown type is `UNKNOWN_EVENT_TYPE`, and a serde failure is `SERIALIZATION_ERROR`
-- [ ] `knows(name, version)` and `names()`
-- [ ] `event_family!` also generates `register_all(&mut EventRegistry)`
-- [ ] Tests: the v1.0.0 → v1.1.0 → v1.2.0 chain, a missing step, an unknown type, a duplicate
+- [x] `register::<E>()` at `E::VERSION`. A second registration of the same name is `DUPLICATE_EVENT_REGISTRATION`, whether by the same type or another one; the message names both Rust types
+- [x] `register_upcaster(name, from, to, Fn(Value) -> Result<Value>)`, in any order relative to `register`. Upcasters apply one step at a time up to the registered version; a gap in the chain, or a stored version newer than the registered one, is `EVENT_VERSION_MISMATCH` (context: stored and registered versions, and `missingFrom`). An upcaster from `v` to `v`, a second one from the same version, or one that would close a loop is `INVALID_CONFIGURATION`, so reading always ends. An upcaster's own error comes back with its code, plus the event and both versions as context
+- [x] `deserialize(&SerializedEvent) -> Result<DomainEvent>`: an unknown type is `UNKNOWN_EVENT_TYPE`, and a serde failure is `SERIALIZATION_ERROR`. The business fields are read in place (`&Value`), and copied only when an upcaster runs
+- [x] `knows(name, version)` (registered at exactly that version: what may be stored, not what can be read), `registered_version(name)` and `names()` (alphabetical). `EventRegistry` is `Clone` (upcasters are shared) and `Send + Sync`
+- [x] `event_family!` also generates `EventFamily::register_all(&mut EventRegistry)`, a required trait method so the builder can register `A::Event` generically. It stops at the first duplicate, which also catches two events in one family sharing a name
+- [x] Tests: the v1.0.0 → v1.1.0 → v1.2.0 chain (upcasters registered out of order), a missing step, a newer stored version, upcasters per event type, an unknown type, a serde failure (also after an upcaster), an upcaster error, a duplicate (same and other type), invalid upcasters, `knows`, `register_all` (also a family with a shared name, and from outside the crate in the macro's doctest)
 
 #### Step 5.2: EventStore wrapper
 Files: `crates/tarodomain/Cargo.toml`, `crates/tarodomain/src/event_sourcing/mod.rs`, `crates/tarodomain/src/event_sourcing/event_store.rs`, `crates/tarodomain/tests/event_store.rs`
-- [ ] Dev-dependencies: `tarodomain-local`, `tarodomain-testing`, tokio with `rt-multi-thread`
-- [ ] `EventStore` wraps `Arc<dyn EventStoreAdapter>` and `Arc<EventRegistry>`. It refuses to append an event whose type or version isn't registered, so nothing is stored that can't be read back
-- [ ] Every load method deserializes through the registry
-- [ ] Integration tests on `LocalProvider`
+- [x] Dev-dependencies: `tarodomain-local`, `tarodomain-testing`, tokio with `rt-multi-thread` (`serde_json` is already a normal dependency)
+- [x] `EventStore` wraps `Arc<dyn EventStoreAdapter>` and `Arc<EventRegistry>` (cheap `Clone`). It refuses to append an event whose type isn't registered (`UNKNOWN_EVENT_TYPE`) or is registered at another version (`EVENT_VERSION_MISMATCH`), so nothing is stored that can't be read back. Every event is checked and serialized before the adapter is called, so one bad event stores none; the error gets `streamId`. `serialize` and `deserialize` are public for the buses and the catch-up dispatcher
+- [x] Every load method deserializes through the registry. An unreadable event fails the whole load, with `streamId` (or `correlationId`) added. Stream queries and `delete_stream` pass through; subscriptions and raw reads go through `adapter()`, so catch-up can skip one unreadable event (Step 8.1)
+- [x] Integration tests on `LocalProvider`: typed round trip with envelopes, `after_version` and `max_count`; `$all`, category and correlation reads; unknown type, old version and unserializable payload refused with nothing stored; events an older build stored (its own registry, same adapter) upcast on read, and the old build failing on the new version; a stored event nobody registered; two spawned appends on a multi-thread runtime, one conflicting; stream queries
 
 #### Step 5.3: Repositories
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/repository/mod.rs`, `crates/tarodomain/src/repository/event_sourced.rs`, `crates/tarodomain/src/repository/state.rs`, `crates/tarodomain/tests/repository.rs`
-- [ ] `Repository<A>`: `load(&A::Id)` (`AGGREGATE_NOT_FOUND`), `load_or_none`, `save(&mut A)`, `exists`
-- [ ] `EventSourcedRepository` load follows §6.2: a snapshot failure goes to `on_snapshot_error` and falls back to full replay, and the aggregate gets the ambient execution context
-- [ ] Save: append at `committed_version()`, then `publish_all`, then `mark_changes_as_committed`, then snapshot (non-critical) when the save crosses a multiple of `snapshot_every`
-- [ ] `StateRepository` trait: the user implements `load`, `save_state` and `exists`; the provided `save` calls `save_state`, publishes, and marks the changes committed
-- [ ] Tests: not found, snapshot plus tail replay, fallback after a snapshot failure, the crossing-a-multiple rule, a concurrent save conflicts, the published events are the appended ones
+- [x] `Repository<A>`: `load(A::Id)` (`AGGREGATE_NOT_FOUND`, provided on `load_or_none`), `load_or_none`, `save(&mut A)`, `exists`. IDs are taken by value, since `A::Id` is `Copy`
+- [x] `EventSourcedRepository::new(event_store, bus)`, `.with_snapshots(store, snapshot_every)` (0: use existing snapshots, take none), `.on_snapshot_error(hook)`, `.on_publish_error(hook)`; cheap `Clone`. Load follows §6.2: a snapshot that fails to load or restore goes to `on_snapshot_error` (context `operation`: `loadSnapshot` / `restoreSnapshot`) and falls back to full replay, and the aggregate gets the ambient execution context
+- [x] Save: append at `committed_version()`, then `publish_all`, then `mark_changes_as_committed` (and drop the aggregate's context), then snapshot (non-critical, `saveSnapshot`) when the save crosses a multiple of `snapshot_every`. A publish failure fails the save only inside a unit of work; outside one it goes to `on_publish_error` (design table)
+- [x] `StateRepository<A>` trait: the user implements `load` (returning `Option<A>`), `save_state` (with the version check) and `exists` (defaults to `load`). The provided `save` lives on `StateStoredRepository<A>`, the `Repository<A>` that wraps the user's repository with a bus: `save_state`, publish, mark committed (design table)
+- [x] Tests: not found, the published events are the appended ones, the crossing-a-multiple rule (also as a unit test), snapshot plus tail replay (a doctored snapshot proves only the tail was replayed), fallback after a snapshot load or restore failure, a failed snapshot save, a concurrent save conflicts and keeps its events, the context until save, a publish failure outside a unit (reported) and inside one (rolled back); state-stored save, load, not found, conflict and publish failure. Mutations (exact multiple instead of crossing, always swallowing publish errors, no context adoption) each fail a test
 
 ### Phase 6: Commands and pipelines (§4, §11, §14, §16)
 
@@ -522,6 +524,7 @@ Files: `crates/tarodomain/Cargo.toml`, `crates/tarodomain/src/lib.rs`, `crates/t
 Files: `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/builder.rs`, `crates/tarodomain/src/framework/aggregate_config.rs`
 - [ ] The §25.1 DSL: `use_provider`, `consistency(mode, transport)`, `snapshot_every`, `aggregate::<A>(|a| a.event_sourced().snapshot_every(n))` or `.state(repository_factory)`, `event::<E>()`, `upcaster(…)`, `command::<C>(factory, consistency)`, `projection(factory)`, `saga::<P>(SagaOptions { timeout })`, the `bind_*` methods, `validation(projection_mode)`, `skip_validation`
 - [ ] Also `on_warning`, `concurrency`, `clock`, `sleeper`, `catch_up_batch_size`, `catch_up_max_attempts`. An explicit `clock` or `sleeper` overrides the provider's
+- [ ] Every repository's `on_snapshot_error` and `on_publish_error` (Step 5.3) go to `on_warning`, which defaults to `tracing`. They are no-ops until then
 - [ ] The global `snapshot_every` applies to every event-sourced aggregate. Setting it explicitly on a state aggregate logs a warning
 
 #### Step 9.4: Runtime

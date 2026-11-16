@@ -24,5 +24,13 @@ uuid.workspace = true
 chrono = { workspace = true, features = ["wasmbind"] }
 uuid = { workspace = true, features = ["js"] }
 
+# Integration tests under tests/ run on the local provider. They link the
+# same core library the provider does, which unit tests wouldn't (see the
+# plan's Risks: dev-dependency cycle).
+[dev-dependencies]
+tarodomain-local.workspace = true
+tarodomain-testing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
 [lints]
 workspace = true

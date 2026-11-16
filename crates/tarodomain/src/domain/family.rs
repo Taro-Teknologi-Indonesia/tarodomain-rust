@@ -4,6 +4,8 @@
 use std::fmt;
 
 use super::{DomainEvent, EventEnvelope};
+use crate::error::Result;
+use crate::event_sourcing::EventRegistry;
 
 /// The events of one aggregate, as an enum with one variant per event type.
 ///
@@ -24,6 +26,14 @@ pub trait EventFamily: Sized + fmt::Debug + Send + Sync + 'static {
     /// The family member `event` holds, or `None` if its type isn't in the
     /// family. The payload isn't copied.
     fn from_domain(event: &DomainEvent) -> Option<Self>;
+
+    /// Registers every event of the family with `registry`, each at its
+    /// [`Event::VERSION`](super::Event::VERSION), in declaration order.
+    ///
+    /// Stops at the first event whose name is already registered
+    /// (`DUPLICATE_EVENT_REGISTRATION`), which leaves the events before it
+    /// registered.
+    fn register_all(registry: &mut EventRegistry) -> Result<()>;
 }
 
 /// Declares an event family: an enum with one variant per event type, named
@@ -31,7 +41,9 @@ pub trait EventFamily: Sized + fmt::Debug + Send + Sync + 'static {
 ///
 /// The macro also implements `From<E>` for each event type, so
 /// `AccountEvent::from(MoneyDeposited { cents: 5 })` and `.into()` work, and
-/// [`EventFamily`]. The event types must be in scope by their plain names.
+/// [`EventFamily`], including
+/// [`register_all`](EventFamily::register_all). The event types must be in
+/// scope by their plain names.
 /// The enum derives `Clone` and `Debug`; add other derives as attributes,
 /// which then need the same derive on every event.
 ///
@@ -39,6 +51,7 @@ pub trait EventFamily: Sized + fmt::Debug + Send + Sync + 'static {
 /// use serde::{Deserialize, Serialize};
 /// use tarodomain::domain::{Event, EventFamily};
 /// use tarodomain::event_family;
+/// use tarodomain::event_sourcing::EventRegistry;
 ///
 /// #[derive(Debug, Serialize, Deserialize)]
 /// struct AccountOpened {
@@ -73,6 +86,11 @@ pub trait EventFamily: Sized + fmt::Debug + Send + Sync + 'static {
 /// };
 /// assert_eq!(cents, 5);
 /// assert_eq!(AccountEvent::names(), ["AccountOpened", "MoneyDeposited"]);
+///
+/// let mut registry = EventRegistry::new();
+/// AccountEvent::register_all(&mut registry)?;
+/// assert!(registry.knows("MoneyDeposited", "1.0.0"));
+/// # Ok::<(), tarodomain::error::FrameworkError>(())
 /// ```
 #[macro_export]
 macro_rules! event_family {
@@ -134,6 +152,13 @@ macro_rules! event_family {
                     }
                 )+
                 ::core::option::Option::None
+            }
+
+            fn register_all(
+                registry: &mut $crate::event_sourcing::EventRegistry,
+            ) -> $crate::error::Result<()> {
+                $(registry.register::<$event>()?;)+
+                ::core::result::Result::Ok(())
             }
         }
     };

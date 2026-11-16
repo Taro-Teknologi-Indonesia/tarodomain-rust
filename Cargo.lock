@@ -344,6 +344,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tarodomain-local",
+ "tarodomain-testing",
  "thiserror",
  "tokio",
  "uuid",
