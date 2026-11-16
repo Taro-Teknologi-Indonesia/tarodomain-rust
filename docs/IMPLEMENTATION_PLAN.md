@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phase 0 done except the first CI run (no remote yet); Phase 1 done; next is Step 2.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0 and 1 done, CI green on [GitHub](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); next is Step 2.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -152,7 +152,7 @@ Files: `Cargo.toml`, `rust-toolchain.toml`, `crates/tarodomain/Cargo.toml`, `cra
 Files: `rustfmt.toml`, `.editorconfig`, `.github/workflows/ci.yml`
 - [x] `rustfmt.toml` (edition 2024) and `.editorconfig`
 - [x] CI: checkout with submodules, then `fmt --check`, `clippy -D warnings`, `test` and `doc` with `-D warnings`
-- [ ] CI green on the first push
+- [x] CI green on the first push (run 43843423321, commit `180bccb`)
 
 #### Step 0.4: Workers target check
 Files: `rust-toolchain.toml`, `.github/workflows/ci.yml`, `README.md`
@@ -160,7 +160,7 @@ Files: `rust-toolchain.toml`, `.github/workflows/ci.yml`, `README.md`
 - [x] CI installs the target and runs `cargo check --target wasm32-unknown-unknown -p tarodomain`. Step 10.1 adds the Cloudflare crate to it, and Step 10.10 the harness and the example worker
 - [x] README: the wasm command and the local containers section (Kiri)
 - [x] Passes locally
-- [ ] Passes in CI
+- [x] Passes in CI
 
 ### Phase 1: Kernel and errors (§1.3 Kernel, §22) (done 2026-11-16)
 
