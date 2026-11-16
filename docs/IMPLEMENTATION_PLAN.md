@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–5 done, Phase 6 under way (Step 6.1 done). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 6.2. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–5 done, Phase 6 under way (Steps 6.1–6.2 done). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 6.3. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -408,9 +408,9 @@ Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/command/mod.rs`, `
 
 #### Step 6.2: ConcurrencyChecker
 Files: `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/concurrency.rs`
-- [ ] `check(expected, actual, stream_id)`, `with_retry(op)`, `compute_delay(attempt)`
-- [ ] Defaults: 3 retries after 10 / 20 / 40 ms, ±10% jitter, capped at 1 s. Only `OPTIMISTIC_CONCURRENCY` is retried. An `on_retry` hook, and an injectable sleeper and random source
-- [ ] Tests with `RecordingSleeper`: the delays, giving up after 3 retries, a domain error isn't retried
+- [x] `check(expected, actual, stream_id)`, `with_retry(op)`, `compute_delay(attempt)`. `with_retry` takes a closure that returns a fresh future per attempt
+- [x] Defaults: 3 retries after 10 / 20 / 40 ms, ±10% jitter, capped at 1 s. Only `OPTIMISTIC_CONCURRENCY` is retried, and the last conflict comes back unchanged when the retries run out. An `on_retry` hook (error, retry number, delay), and an injectable random source. The sleeper is a required argument of `new(sleeper)`, so a provider passes its own (`Provider::sleeper()`) and the checker needs no platform default
+- [x] Tests with `RecordingSleeper`: the delays, giving up after 3 retries, domain and infrastructure errors aren't retried, zero retries, the hook
 
 #### Step 6.3: Pipelines and dispatcher
 Files: `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/pipeline.rs`, `crates/tarodomain/src/command/dispatcher.rs`

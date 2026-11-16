@@ -6,10 +6,12 @@
 //! [`CommandContext`] with the repositories of the registered aggregates, on
 //! the event bus of the pipeline that runs it.
 
+mod concurrency;
 mod handler;
 mod registry;
 mod result;
 
+pub use concurrency::{ConcurrencyChecker, RetryHook};
 pub use handler::{CommandContext, CommandHandler};
 pub use registry::{AnyCommandHandler, CommandRegistration, CommandRegistry, RepositoryRegistry};
 pub use result::{BatchDispatchResult, CommandDispatchResult, CommandOutcome, DispatchStatus};
