@@ -1,0 +1,27 @@
+[package]
+name = "tarodomain"
+description = "TaroDomain core: event sourcing, CQRS and DDD with strong or eventual consistency per command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The core stays platform-agnostic: no database driver, HTTP framework or cloud SDK.
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+# Cloudflare Workers: take time and randomness from the JavaScript runtime,
+# because `SystemTime` and the OS random source don't exist there.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+uuid = { workspace = true, features = ["js"] }
+
+[lints]
+workspace = true

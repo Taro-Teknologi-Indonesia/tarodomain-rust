@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# Cloudflare Workers run wasm32-unknown-unknown; CI checks the core builds for it.
+targets = ["wasm32-unknown-unknown"]

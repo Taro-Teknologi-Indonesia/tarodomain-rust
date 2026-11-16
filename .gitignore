@@ -1,0 +1,15 @@
+# Cargo build output
+/target/
+**/*.rs.bk
+
+# Local databases created by tests and examples
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Environment and editor/OS noise
+.env*
+!.env.example
+.DS_Store
+.idea/

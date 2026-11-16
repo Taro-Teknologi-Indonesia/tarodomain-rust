@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+# Members are listed explicitly; each plan step that adds a crate adds it here.
+members = ["crates/tarodomain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+# The crates are private: other projects use a git dependency pinned to a tag.
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+tarodomain = { path = "crates/tarodomain" }
+
+# Shared third-party dependencies. Crates opt in with `name.workspace = true`.
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["now", "serde", "std"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.lints.cargo]
+# The shared dependencies above are declared up front, so a plan step only
+# touches its own crate's Cargo.toml. Back to "warn" in plan step 13.1.
+unused_workspace_dependencies = "allow"
