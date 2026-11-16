@@ -1,0 +1,20 @@
+[package]
+name = "tarodomain-local"
+description = "TaroDomain LocalProvider: every store in memory, for tests and local development"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono.workspace = true
+tarodomain.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tarodomain-testing.workspace = true
+
+[lints]
+workspace = true

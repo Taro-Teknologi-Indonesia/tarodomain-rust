@@ -1,0 +1,26 @@
+[package]
+name = "tarodomain-testing"
+description = "TaroDomain provider contract suites: the behaviour every provider must pass"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The suites also run inside workerd against D1 (the Cloudflare harness), so
+# this crate must build for wasm32-unknown-unknown: no tokio runtime, no
+# threads, only `tokio::join!` and `futures` to run things concurrently.
+[dependencies]
+chrono.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tarodomain.workspace = true
+tokio.workspace = true
+
+# For the doc example only. The suites run against the local provider in
+# crates/tarodomain-local/tests/contract.rs.
+[dev-dependencies]
+tarodomain-local.workspace = true
+
+[lints]
+workspace = true

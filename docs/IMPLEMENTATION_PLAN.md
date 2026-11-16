@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–3 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phases 2 and 3 pass every check locally and haven't been pushed yet. Next is Step 4.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–4 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phases 2–4 pass every check locally and haven't been pushed yet. Next is Step 5.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -58,7 +58,7 @@ Status: Phases 0–3 done. Phases 0 and 1 are green on [GitHub CI](https://githu
 | `examples/bank-account-worker` | Worker | The same domain on Cloudflare | 10 |
 | `examples/bank-account-server` | binary | The same domain served over HTTP on SQLite | 12 |
 
-Dependency direction: `local → tarodomain ← cloudflare`, `sqlx → tarodomain`, `testing → tarodomain`, `axum → tarodomain`. `tarodomain` dev-depends on `tarodomain-local` and `tarodomain-testing` for its integration tests, and `tarodomain-cloudflare` dev-depends on `tarodomain-testing`.
+Dependency direction: `local → tarodomain ← cloudflare`, `sqlx → tarodomain`, `testing → tarodomain`, `axum → tarodomain`. `tarodomain` dev-depends on `tarodomain-local` and `tarodomain-testing` for its integration tests, and every provider crate (`local`, `cloudflare`, `sqlx`) dev-depends on `tarodomain-testing` to run the contract suites. `tarodomain-testing` dev-depends on `tarodomain-local` for its doc examples; dev-dependencies don't form a cycle at the library level.
 
 Core module map (`crates/tarodomain/src/`), following the spec's layers (§1.2–1.3):
 
@@ -304,53 +304,69 @@ Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/adapters/mod.rs`, 
 - [x] `EventBus::as_subscribable()` (`None` by default, `Some` for `InMemoryEventBus`), so the framework can subscribe handlers to a provider's bus without trait upcasting (Rust 1.86). Hence the two `bus/` files
 - [x] `tarodomain::prelude` re-exports what a domain crate needs: the domain types, the error types, `aggregate_id!` and `event_family!`, `EventBus` and `EventHandler`, `ConsistencyMode` and `async_trait`. A doctest builds an event family through it
 
-### Phase 4: Local provider and contract suites (§24 LocalProvider)
+### Phase 4: Local provider and contract suites (§24 LocalProvider) (done 2026-11-16)
 
 #### Step 4.1: Local crate and shared database
 Files: `Cargo.toml`, `crates/tarodomain-local/Cargo.toml`, `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/database.rs`
-- [ ] Workspace member added
-- [ ] `LocalDatabase`: tables behind an `Arc<Mutex<…>>` shared by every adapter of one provider, an injectable `Clock`, and a global append position counter
-- [ ] The lock is a `std::sync::Mutex` held only in short synchronous sections, never across `.await`
+- [x] Workspace member added
+- [x] `LocalDatabase`: tables behind an `Arc<Mutex<…>>` shared by every adapter of one provider (clones are handles to the same storage), and an injectable `Clock`. Tables are keyed by type: each adapter keeps its rows in a `Table` of its own type through `read::<T>(f)` and `write::<T>(f)`, so later steps add tables without touching this file, and an application can keep in-memory read models in the same database. The global append position counter belongs to the event table (Step 4.2)
+- [x] The lock is a `std::sync::Mutex` held only while a synchronous closure runs, never across `.await`. Writes also take the database's turn, an async lock, which a unit of work holds for its whole life (Step 4.4)
+- [x] Tests: empty default, keyed by type, the closure's result, shared clones, the clock, a write waits for the turn, a copy of the tables is deep
 
 #### Step 4.2: In-memory event store adapter
-Files: `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/event_store.rs`
-- [ ] The expected-version check and the append happen under one lock. A conflict is `OPTIMISTIC_CONCURRENCY` with the stream, expected and actual versions as context
-- [ ] Cross-stream reads are ordered by append position. An `after_event_id` cursor resolves to its position, falling back to comparing IDs only if that event was deleted
-- [ ] Category streams (`BankAccount`) and `$all`
-- [ ] Subscriptions: `subscribe` is idempotent, `ack` only moves forward, and `record_failed_attempt` counts per event and resets on ack
+Files: `crates/tarodomain-local/Cargo.toml`, `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/event_store.rs`
+- [x] Dependencies: `chrono`; `serde_json` for tests
+- [x] `InMemoryEventStoreAdapter::new(db)`. One `EventTable` holds the rows by position, the event ID → position index, the aggregate streams (their positions in version order, `created_at`, `updated_at`), the subscriptions, and the last position given out
+- [x] The expected-version check and the append happen in one `write`. A conflict is `OPTIMISTIC_CONCURRENCY` with the stream, expected and actual versions as context. An ID already stored, or twice in one append, is `EVENT_APPEND_FAILED` and writes nothing
+- [x] Cross-stream reads are ordered by append position. An `after_event_id` cursor resolves to its position, falling back to comparing IDs only if that event was deleted
+- [x] Category streams (`BankAccount`) and `$all`
+- [x] Subscriptions: `subscribe` is idempotent (`Some("$all")` is stored as `None`), `ack` only moves forward in append order, and `record_failed_attempt` counts per event and resets on ack
+- [x] Tests: versions and conflicts, empty appends, non-aggregate streams, duplicate IDs, `after_version` and `max_count`, append order across streams with same-millisecond IDs in reverse, the deleted-cursor fallback, delete and position reuse, correlation, clock-stamped metadata, subscriptions
 
 #### Step 4.3: In-memory stores
 Files: `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/snapshot_store.rs`, `crates/tarodomain-local/src/saga_store.rs`, `crates/tarodomain-local/src/idempotency.rs`, `crates/tarodomain-local/src/dead_letter.rs`
-- [ ] One adapter per contract of steps 3.2–3.3
-- [ ] Sagas: `load_by_status` ordered by `updated_at` ascending; `load_timed_out` filters to `Running` / `Compensating`, by saga type and up to the limit
-- [ ] Dead letters get auto-increment IDs
+- [x] One adapter per contract of steps 3.2–3.3: `InMemorySnapshotStore`, `InMemorySagaStore`, `InMemoryProcessedEventStore`, `InMemoryCommandIdempotencyStore`, `InMemoryDeadLetterStore`, each with `new(db)` and a table of its own. Timestamps come from the database's clock
+- [x] Sagas: `load_by_status` ordered by `updated_at` ascending, then type and ID; `load_timed_out` filters to `Running` / `Compensating`, by saga type and up to the limit. The write rules are `SagaRecord::saved`, `complete` and `fail`
+- [x] Dead letters get auto-increment IDs, never reused after a delete
+- [x] Tests: snapshot upsert and per-type reads and deletes; saga timestamps, ending once, list order, filter before limit; idempotent marks keep their first time; dead-letter IDs, per-handler reads and the latest entry, `delete_old`
 
 #### Step 4.4: Unit of work and LocalProvider
-Files: `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/unit_of_work.rs`, `crates/tarodomain-local/src/provider.rs`
-- [ ] `InMemoryUnitOfWork` copies the tables on `begin` and restores them on `rollback`. Units on one database run one at a time (an async lock held for the unit), so a rollback never undoes another unit's writes
-- [ ] `LocalProvider::new()` and `LocalProvider::with_database(db)`. `create_event_bus` returns an `InMemoryEventBus` for both consistency modes, and `provider_type()` is `"local"`
+Files: `crates/tarodomain-local/src/lib.rs`, `crates/tarodomain-local/src/database.rs`, `crates/tarodomain-local/src/unit_of_work.rs`, `crates/tarodomain-local/src/provider.rs`
+- [x] `InMemoryUnitOfWork` takes the database's turn and copies the tables on `begin`. Inside `execute`, `LocalDatabase::read` / `write` use that copy (the task's active unit, if it is an in-memory unit over the same database), so the unit sees its own writes and other tasks don't. `commit` swaps the copy in; `rollback`, or dropping a begun unit, throws it away
+- [x] Units on one database run one at a time (the turn, an async lock, is held for the unit), and writes outside a unit wait for it, so a commit never overwrites and a rollback never undoes another writer's work. Rustdoc warns against waiting, inside a unit, for a write that runs outside it (such as a spawned task's)
+- [x] `begin` on an active unit and `commit` on an inactive one are `INVALID_CONFIGURATION`; `rollback` on an inactive one does nothing
+- [x] `LocalProvider::new()`, `LocalProvider::with_database(db)` and `database()`. `create_event_bus` returns a new `InMemoryEventBus` (`local-strong` / `local-eventual`) for both consistency modes; a transport other than `in_memory` is `INVALID_CONFIGURATION`. `provider_type()` is `"local"`, and `clock()` is the database's
+- [x] Tests: commit and rollback over several tables, others see writes only after commit, a write outside waits (and survives a rollback), units run one at a time, a unit over another database is ignored, dropping a begun unit, state checks; the provider's shared storage, a unit over two stores, new units, buses, clock
 
 #### Step 4.5: Testing crate and event store contract
 Files: `Cargo.toml`, `crates/tarodomain-testing/Cargo.toml`, `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/fixtures.rs`, `crates/tarodomain-testing/src/event_store_contract.rs`
-- [ ] Workspace member added
-- [ ] Each suite is a `pub async fn` that takes a factory returning a provider with empty storage
-- [ ] The crate builds for wasm32, because the Cloudflare harness (Step 10.8) runs the suites inside workerd. Suites use only `tokio::join!` and `futures`; `#[tokio::test]` appears only in the `provider_contract_tests!` expansion. Check it with `cargo check --target wasm32-unknown-unknown -p tarodomain-testing`; CI covers it once the harness build lands (Step 10.10)
-- [ ] Fixtures: small events and serialized events with fixed IDs and timestamps
-- [ ] Event store contract: versions from 1 and 0 for a missing stream; a stale expected version conflicts, including two racing appends (`tokio::join!`); an empty append; `after_version` and `max_count`; category and `$all` reads; two same-millisecond IDs that sort in reverse come back in append order; load by correlation ID; delete stream; subscription create, ack, list, delete and failed attempts
+- [x] Workspace member added. Dependencies: `chrono`, `serde_json`, `tokio`; `tarodomain-local` as a dev-dependency for the crate doc's example, which runs the event store suite against it
+- [x] Each suite is a `pub async fn` that takes a `ProviderFactory`: any closure returning a future of a provider with empty storage, such as `|| async { LocalProvider::new() }`. Each case asks it for a fresh provider
+- [x] The crate builds for wasm32, because the Cloudflare harness (Step 10.8) runs the suites inside workerd. Suites use only `tokio::join!` (and `futures`, from Step 4.7); a tokio runtime appears only in the `provider_contract_tests!` expansion (Step 4.8). Checked with `cargo check --target wasm32-unknown-unknown -p tarodomain-testing`; CI covers it once the harness build lands (Step 10.10)
+- [x] Fixtures: fixed times from a documented epoch, event IDs that increase with `n`, a same-millisecond pair that sorts in reverse, aggregate and stream IDs, and a serialized event with every optional field set. Typed events wait for the first suite that needs them
+- [x] Event store contract: versions from 1 and 0 for a missing stream, with metadata; a stale expected version conflicts (with its context), including two racing appends (`tokio::join!`); an empty append; non-aggregate streams and duplicate IDs fail atomically; events round-trip unchanged; `after_version` and `max_count`; category and `$all` reads; two same-millisecond IDs that sort in reverse come back in append order; a cursor whose event was deleted; load by correlation ID; delete stream; subscription create, ack, list, delete and failed attempts
 
 #### Step 4.6: Store contracts
 Files: `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/snapshot_contract.rs`, `crates/tarodomain-testing/src/saga_store_contract.rs`, `crates/tarodomain-testing/src/idempotency_contract.rs`, `crates/tarodomain-testing/src/dead_letter_contract.rs`
-- [ ] Snapshots: upsert, latest, at a version, list, `delete_before` returns the count, `count`
-- [ ] Sagas: upsert, idempotent partial `complete` / `fail`, `load_by_status` order, `load_timed_out` with type filter and limit, `count`
-- [ ] Processed events and commands: idempotent mark, `exists`, `count`, `delete_by_handler`, `delete_old`
-- [ ] Dead letters: `write`, `list`, `get`, `get_by_id`, `delete`, `count`, `delete_old`
+- [x] The provider tells time by its own clock (the system clock on D1 and SQL), so the suites never compare with fixed times: they compare with the timestamps the store returned, or with a cut-off long ago or far in the future, and check list order as a property (sorted by time, then by the tie-breakers)
+- [x] Snapshots: the stored fields, upsert, latest (the highest version, not the last saved), at a version, per-type reads, list newest first, `delete_before` keeps the cut-off and returns the count, `delete_all`, `count`
+- [x] Sagas: the stored fields and timestamp rules, a terminal save sets `completed_at`, idempotent partial `complete` / `fail` (and on a missing saga), `load_by_status` order and the type filter before the limit, `load_timed_out` (active only, exclusive cut-off, type filter before limit), `delete`, `count`
+- [x] Processed events and commands: idempotent marks keep the first record, `exists` per instance, `count`, `delete_by_handler`, the command list order, `delete_old` with an exclusive cut-off
+- [x] Dead letters: the stored fields, IDs increase and aren't reused, `list` in ID order, `get` returns the latest, `get_by_id`, `delete`, `count`, `delete_old`
+- [x] The crate doc's example runs all five suites against the local provider; a mutation (command marks overwriting instead of keeping the first) fails the idempotency suite
 
-#### Step 4.7: Unit of work, concurrency and provider contracts
-Files: `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/unit_of_work_contract.rs`, `crates/tarodomain-testing/src/concurrency_contract.rs`, `crates/tarodomain-testing/src/provider_contract.rs`, `crates/tarodomain-local/tests/contract.rs`
-- [ ] Unit of work: commit keeps writes; rollback discards the writes of **every** store; a nested `execute` joins; an error in the work rolls back and is returned
-- [ ] Concurrency: several appenders plus a reader looping `load_all` with a cursor; the reader sees every event exactly once. 16 concurrent readers never fail
-- [ ] `provider_contract_tests!(factory)` expands every suite into a `#[tokio::test]`
-- [ ] The local provider passes every suite
+#### Step 4.7: Unit of work and concurrency contracts
+Files: `crates/tarodomain-testing/Cargo.toml`, `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/unit_of_work_contract.rs`, `crates/tarodomain-testing/src/concurrency_contract.rs`
+- [x] Dependency: `futures` (`join_all`). Still builds for wasm32
+- [x] Unit of work: commit keeps writes; rollback discards the writes of **every** store (one row each: event, subscription, snapshot, saga, processed event, processed command, dead letter); the work's error comes back unchanged; reads inside the unit see its writes and readers outside don't (`tokio::join!` with oneshot channels); a nested `execute` joins and never begins; a stale append inside a unit rolls back its other writes; two racing units on one stream let exactly one win. A provider without units passes trivially
+- [x] Concurrency: four appenders plus a reader looping `load_all` with a cursor (IDs deliberately out of append order); the reader sees every event exactly once, in append order. Four writers retrying on conflict lose no update. 16 concurrent readers never fail and agree. A runtime-free `yield_now` makes the joined futures interleave
+
+#### Step 4.8: Provider contract and the local provider's run
+Files: `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/provider_contract.rs`, `crates/tarodomain-local/Cargo.toml`, `crates/tarodomain-local/tests/contract.rs`, `README.md`
+- [x] Provider: `provider_type`, adapters share storage, `initialize` can run again without losing data, buses (the strong one subscribable, an unknown transport rejected), a new unit per call that hasn't begun, a plausible clock
+- [x] `provider_contract_tests!(factory)` expands every suite into a plain `#[test]` named after it, which runs the suite on a current-thread runtime from the testing crate (`__private::run`), so a provider crate needs no tokio dev-dependency
+- [x] The local provider passes every suite (`crates/tarodomain-local/tests/contract.rs`), also with its database's clock stopped, which shows the suites rely on no time passing. Mutations (cursor reads by ID instead of position; a rollback that commits) fail the event store, concurrency and unit of work suites
+- [x] README: crate status
 
 ### Phase 5: Event sourcing (§3.3–3.4, §6, §7)
 
