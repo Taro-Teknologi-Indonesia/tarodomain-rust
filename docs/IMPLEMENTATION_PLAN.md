@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–5 done, Phase 6 under way (Steps 6.1–6.2 done). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 6.3. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–5 done, Phase 6 under way (Steps 6.1–6.3 done). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 6.4. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -414,10 +414,11 @@ Files: `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/co
 
 #### Step 6.3: Pipelines and dispatcher
 Files: `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/pipeline.rs`, `crates/tarodomain/src/command/dispatcher.rs`
-- [ ] Strong (§11.1): retry → unit of work → `ExecutionContext::for_command` → idempotency check → fresh handler → `handle` → mark processed, all in one unit of work. Inside an active unit it joins and doesn't retry on its own
-- [ ] Eventual (§11.2): retry → context → idempotency check → `handle` → mark processed
-- [ ] A command already processed returns `Duplicate` without running the handler. Idempotency is checked again on every attempt
-- [ ] `CommandDispatcher`: routes by per-command consistency (§11.3); `dispatch_all(continue_on_error)` always returns a result; `can_dispatch`
+- [x] One `CommandPipeline` type for both modes (§11.1–11.2), built from the provider, the mode's bus, the repository registry and a `ConcurrencyChecker`. Strong: retry → unit of work → `ExecutionContext::for_command` → idempotency check → fresh handler → `handle` → mark processed, all in one unit (a provider without units runs without one). Eventual: the same without the unit. Inside an active unit it joins and doesn't retry on its own
+- [x] A command already processed returns `Duplicate` without running the handler. Idempotency is checked again on every attempt. The mark's handler name is `<Command>Handler`
+- [x] `CommandDispatchResult::events` come from a recording wrapper around the bus, made fresh for each attempt, so a failed attempt reports nothing. It records before publishing, so eventual mode reports events that are stored even if the publish failed
+- [x] `CommandDispatcher`: routes by the registration's consistency, else the default (§11.3); `dispatch(impl Into<AnyCommand>)`; `dispatch_all(commands, continue_on_error)` always returns a result; `can_dispatch`
+- Behaviour tests come with Step 6.4 (they need the local provider, so they are integration tests)
 
 #### Step 6.4: Pipeline tests
 Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/support/bank.rs`, `crates/tarodomain/tests/command_pipeline.rs`

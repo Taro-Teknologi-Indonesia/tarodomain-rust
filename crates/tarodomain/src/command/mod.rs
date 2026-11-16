@@ -7,11 +7,15 @@
 //! the event bus of the pipeline that runs it.
 
 mod concurrency;
+mod dispatcher;
 mod handler;
+mod pipeline;
 mod registry;
 mod result;
 
 pub use concurrency::{ConcurrencyChecker, RetryHook};
+pub use dispatcher::CommandDispatcher;
 pub use handler::{CommandContext, CommandHandler};
+pub use pipeline::CommandPipeline;
 pub use registry::{AnyCommandHandler, CommandRegistration, CommandRegistry, RepositoryRegistry};
 pub use result::{BatchDispatchResult, CommandDispatchResult, CommandOutcome, DispatchStatus};
