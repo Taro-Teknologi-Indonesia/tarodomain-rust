@@ -1,0 +1,22 @@
+# The PostgreSQL the tarodomain-sqlx contract tests run against (plan Step 11.5).
+#
+#   docker --context kiri compose up -d     # Kiri, the dev machine's engine
+#   DATABASE_URL=postgres://tarodomain:tarodomain@localhost:54329/tarodomain \
+#     cargo test -p tarodomain-sqlx
+#
+# Any engine that speaks the Docker Engine API runs this file. The host port is
+# not 5432, so it doesn't collide with other projects' databases.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tarodomain
+      POSTGRES_PASSWORD: tarodomain
+      POSTGRES_DB: tarodomain
+    ports:
+      - "54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tarodomain"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

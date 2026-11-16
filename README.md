@@ -14,7 +14,7 @@ The spec is a git submodule at [`spec/`](spec), pinned to the version this code 
 | [`tarodomain-local`](crates/tarodomain-local) | §24 (LocalProvider) | In-memory adapters for tests and local development | Done (Phase 4); passes every contract suite |
 | [`tarodomain-testing`](crates/tarodomain-testing) | §24 | Contract test suites that every provider must pass | Done (Phase 4) |
 | [`tarodomain-cloudflare`](crates/tarodomain-cloudflare) | §24.2–24.3, §26.1, §27.2 | Cloudflare provider on workers-rs: D1, Queues, Cron Triggers, and the Worker entry points | Code done (Phase 10); passes every contract suite on SQLite. The suites on D1 itself are wired into CI and not yet run |
-| `tarodomain-sqlx` | §24, §27 | SQLite and PostgreSQL provider on sqlx, for servers outside Cloudflare | Planned (Phase 11) |
+| `tarodomain-sqlx` | §24, §27 | SQLite and PostgreSQL provider on sqlx, for servers outside Cloudflare | Done (Phase 11); PostgreSQL tests need `DATABASE_URL` (`docker --context kiri compose up -d`) |
 | `tarodomain-axum` | §26 | Native HTTP entry point and worker loop | Planned (Phase 12) |
 | `examples/bank-account` | — | The BankAccount / TransferMoney example used throughout the spec | Done |
 | [`examples/bank-account-worker`](examples/bank-account-worker) | — | The same example deployed as a Cloudflare Worker; the template to copy | Done (Phase 10) |

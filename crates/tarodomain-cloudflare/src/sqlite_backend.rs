@@ -81,7 +81,11 @@ impl D1Backend for SqliteBackend {
     async fn all(&self, statement: &Statement) -> Result<Vec<Row>, BackendError> {
         let connection = self.connection();
         let mut prepared = connection.prepare_cached(&statement.sql).map_err(convert)?;
-        let names: Vec<String> = prepared.column_names().map(str::to_owned).collect();
+        let names: Vec<String> = prepared
+            .column_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         let mut rows = prepared
             .query(params_from_iter(bind(&statement.params)))
             .map_err(convert)?;

@@ -5,6 +5,7 @@ members = [
     "crates/tarodomain",
     "crates/tarodomain-cloudflare",
     "crates/tarodomain-local",
+    "crates/tarodomain-sqlx",
     "crates/tarodomain-testing",
     "harness/cloudflare-contract",
     "examples/bank-account",
@@ -24,6 +25,7 @@ publish = false
 tarodomain = { path = "crates/tarodomain" }
 tarodomain-cloudflare = { path = "crates/tarodomain-cloudflare" }
 tarodomain-local = { path = "crates/tarodomain-local" }
+tarodomain-sqlx = { path = "crates/tarodomain-sqlx" }
 tarodomain-testing = { path = "crates/tarodomain-testing" }
 bank-account = { path = "examples/bank-account" }
 bank-account-worker = { path = "examples/bank-account-worker" }
@@ -34,6 +36,7 @@ chrono = { version = "0.4", default-features = false, features = ["now", "serde"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "migrate", "macros", "chrono", "uuid", "json"] }
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

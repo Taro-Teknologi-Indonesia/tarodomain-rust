@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–9 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, 512 tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 11.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–11 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phase 11 passes every contract suite on SQLite and on PostgreSQL 16 (the compose service, run through Kiri). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1, and the new `postgres` service in `ci.yml` is untried). Next is Step 12.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -131,6 +131,11 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | Queue transports and the strong bus on Cloudflare (§10.5, §24.2) | `EventBusConfig` transport `"queue"` is the queue bus (the default for eventual mode) and `"in_memory"` the in-process bus (the default for strong mode). | Strong mode must deliver inside the command's unit of work, which a queue can't do. |
 | Unit of work reads its own writes (§11.4) | The unit of work contract requires only what the framework reads back inside a unit: a stream's version and events, a saga, idempotency marks. D1 shows no more than that before the commit. | Snapshots, subscriptions, dead letters and counts are never read back inside a unit, and staging them for reading would copy half of SQL. |
 | Queue consumer: `message.retry({ delaySeconds })` (§10.5) | Same, with the delay from `RetryPolicy` and the attempt count from the message itself. | Queues already count attempts, so no extra table is needed. |
+| SQL values: UUID, timestamp and JSON columns (§27.1) | `Param` and `Row` in `Db` hide the storage: text on SQLite, `uuid`, `timestamptz` and `jsonb` on PostgreSQL. SQL is written once with `?` placeholders (`$1`, … on PostgreSQL). A `NULL` parameter is typed (`Param::Null(NullKind)`). | One set of adapters serves both databases, and PostgreSQL rejects an untyped `NULL` for a `uuid` column. |
+| `UnitOfWork` on SQL (§11.4) | `SqlxUnitOfWork` holds one real transaction (`BEGIN IMMEDIATE` on SQLite, so two writers queue instead of failing at their first write). `Db` runs queries on it while it is the task's active unit, so reads see the unit's own writes, with no overlay. An append outside a unit runs in a unit of its own (`Db::atomically`). | sqlx has interactive transactions, unlike D1. |
+| SQL event store positions (§3.2, §18) | Appends leave `position` NULL and `Sequencer` numbers events after commit (Risks: global ordering). Cross-stream reads and `ack_subscription` number what is waiting first (`try_run`), unless a unit is active; they return only numbered events. An aggregate stream is read by version and needs no number. | Positions given at insert time follow insert order, not commit order, so a cursor could skip an event that commits late. |
+| `tarodomain-sqlx` MSRV | The crate sets `rust-version = "1.94"`, sqlx 0.9's own. The rest of the workspace stays at 1.85. `tarodomain-cloudflare`'s rusqlite is pinned to 0.39, because sqlx-sqlite and rusqlite must agree on `libsqlite3-sys` (one `links = "sqlite3"` per build). | Cargo allows one copy of a native library. |
+| Eventual bus on SQL (§10.5, §15.2) | `SqlxEventBus` carries nothing: it wakes the catch-up worker through a shared `tokio::sync::Notify` (after the commit, inside a unit). Transports `"in_memory"` (strong default) and `"notify"` (eventual default). | The events are already durable, and the cursor-based catch-up delivers them. |
 
 ## Phases and steps
 
@@ -675,43 +680,50 @@ Files: `.github/workflows/ci.yml`, `README.md`
 - [x] A `workers` job: Node, `worker-build`, then `scripts/cloudflare-contract.sh`
 - [x] README: crate table status, and a Cloudflare development section
 - [ ] CI green. Not run yet: nothing is pushed, and CI hasn't been checked since Phase 1
-### Phase 11: SQL provider, `tarodomain-sqlx` (§24, §27)
+### Phase 11: SQL provider, `tarodomain-sqlx` (§24, §27) (done 2026-11-16)
 
 #### Step 11.1: Crate and schema
 Files: `Cargo.toml`, `crates/tarodomain-sqlx/Cargo.toml`, `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/migrations/sqlite/0001_init.sql`, `crates/tarodomain-sqlx/migrations/postgres/0001_init.sql`
-- [ ] Workspace member added; cargo features `sqlite` and `postgres`
-- [ ] The §27.1 tables, prefixed `tarodomain_`: `events`, `streams`, `snapshots`, `subscriptions`, `processed_events`, `sagas`, `dead_letters`, `processed_commands`, plus `counters` (the sequencer) and `locks` (job leases). sqlx migrations replace `schema_migrations`
-- [ ] `stream_events` is folded into `events` (`stream_id`, `stream_version`, unique together), and `events.position` is nullable and unique **(Dart)**. `subscriptions` also has `last_position`, `failed_event_id` and `failed_attempts`
-- [ ] SQLite starts from the D1 schema of Step 10.3. PostgreSQL uses `uuid`, `jsonb` and `timestamptz`
+- [x] Workspace member added; cargo features `sqlite` and `postgres`
+- [x] The §27.1 tables, prefixed `tarodomain_`: `events`, `streams`, `snapshots`, `subscriptions`, `processed_events`, `sagas`, `dead_letters`, `processed_commands`, plus `counters` (the sequencer) and `locks` (job leases). sqlx migrations replace `schema_migrations`
+- [x] `stream_events` is folded into `events` (`stream_id`, `stream_version`, unique together), and `events.position` is nullable and unique **(Dart)**. `subscriptions` also has `last_position`, `failed_event_id` and `failed_attempts`
+- [x] SQLite starts from the D1 schema of Step 10.3. PostgreSQL uses `uuid`, `jsonb` and `timestamptz`, and `BIGINT` for the counters that SQLite calls `INTEGER`
+- [x] Also touched, beyond the five files: `crates/tarodomain-cloudflare/Cargo.toml` and `src/sqlite_backend.rs` (rusqlite 0.43 → 0.39, one call changed; design table), `crates/tarodomain-sqlx/Cargo.toml` and `tests/schema.rs` (the schema applies and has every table)
 
 #### Step 11.2: Transaction plumbing
 Files: `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/src/db.rs`, `crates/tarodomain-sqlx/src/unit_of_work.rs`, `crates/tarodomain-sqlx/tests/db_scan.rs`
-- [ ] `Db` is the only code that runs queries. It uses the task-local transaction when a unit of work is active and the pool otherwise
-- [ ] `SqlxUnitOfWork`: `begin` / `commit` / `rollback`, a nested unit joins, `after_commit` callbacks
-- [ ] A source-scan test fails if any other file under `src/` executes queries directly **(Dart)**
+- [x] `Db` is the only code that runs queries. It uses the task-local transaction when a unit of work is active and the pool otherwise
+- [x] `SqlxUnitOfWork`: `begin` / `commit` / `rollback`, a nested unit joins, `after_commit` callbacks
+- [x] A source-scan test fails if any other file under `src/` executes queries directly **(Dart)**. `provider.rs` may name the pool types, nothing else
+- [x] `Db` also has `Param` / `Row` (design table), `limit`, `atomically`, `in_unit`, `migrate` and `DetachedTx`, a transaction that belongs to the caller (the Sequencer's, and the job leases' statements)
 
 #### Step 11.3: Event store adapter and sequencer
 Files: `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/src/event_store.rs`, `crates/tarodomain-sqlx/src/sequencer.rs`
-- [ ] Append: a conditional `UPDATE … WHERE stream_version = expected`, or insert-if-absent for a new stream. No row affected is `OPTIMISTIC_CONCURRENCY`. Events are inserted with `position` NULL
-- [ ] `Sequencer` assigns positions after commit, in its own transaction, by claiming a counter row (see Risks). `load_all` and `load_stream_after_event` return only positioned events, ordered by position, and run `try_run` first when outside a unit of work
-- [ ] A subscription ack only moves `last_position` forward
+- [x] Append: a conditional `UPDATE … WHERE stream_version = expected`, or insert-if-absent for a new stream. No row affected is `OPTIMISTIC_CONCURRENCY`. Events are inserted with `position` NULL
+- [x] `Sequencer` assigns positions after commit, in its own transaction, by claiming a counter row (see Risks). `load_all` and `load_stream_after_event` return only positioned events, ordered by position, and run `try_run` first when outside a unit of work
+- [x] A subscription ack only moves `last_position` forward (the ack numbers what is waiting first, so both events have positions)
+- [x] This step touched `db.rs` and `Cargo.toml` and added `tests/event_store.rs` (12 cases on SQLite, including racing sequencers): eight files, over the limit
 
 #### Step 11.4: Other SQL adapters
 Files: `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/src/snapshot_store.rs`, `crates/tarodomain-sqlx/src/saga_store.rs`, `crates/tarodomain-sqlx/src/idempotency.rs`, `crates/tarodomain-sqlx/src/dead_letter.rs`
-- [ ] Idempotent writes with `ON CONFLICT DO NOTHING` / `DO UPDATE` (§14.3)
-- [ ] The same semantics as the in-memory adapters
+- [x] Idempotent writes with `ON CONFLICT DO NOTHING` / `DO UPDATE` (§14.3)
+- [x] The same semantics as the in-memory adapters, checked by the contract suites in Step 11.5. Writes in a unit are real, so `DeadLetterStore::write` returns its ID inside a unit too
 
 #### Step 11.5: Provider, contracts and local database
 Files: `.github/workflows/ci.yml`, `compose.yaml`, `crates/tarodomain-sqlx/src/provider.rs`, `crates/tarodomain-sqlx/tests/sqlite_contract.rs`, `crates/tarodomain-sqlx/tests/postgres_contract.rs`
-- [ ] `SqlxProvider::sqlite(pool)` and `SqlxProvider::postgres(pool)`. `initialize()` runs the migrations
-- [ ] `compose.yaml`: one `postgres:16` service on a non-default host port, so it doesn't collide with other projects' databases. Started with `docker --context kiri compose up -d` (Decisions), and it works with any Docker-API engine
-- [ ] Every contract suite passes on SQLite and on PostgreSQL (`DATABASE_URL`; locally the compose service, in CI a service container). The PostgreSQL tests skip with a message when `DATABASE_URL` is unset
-- [ ] PostgreSQL only: a reader makes progress while another transaction stays open
+- [x] `SqlxProvider::sqlite(pool)` and `SqlxProvider::postgres(pool)`. `initialize()` runs the migrations
+- [x] `compose.yaml`: one `postgres:16` service on a non-default host port, so it doesn't collide with other projects' databases. Started with `docker --context kiri compose up -d` (Decisions), and it works with any Docker-API engine
+- [x] Every contract suite passes on SQLite and on PostgreSQL (`DATABASE_URL`; locally the compose service, in CI a service container). The PostgreSQL tests skip with a message when `DATABASE_URL` is unset
+- [x] PostgreSQL only: a reader makes progress while another transaction stays open, and the late event is positioned after the one that committed first
+- [x] Each PostgreSQL case runs in a schema of its own (`search_path`). The schemas aren't dropped, so a dev database collects them; drop the `tarodomain_test_*` ones now and then
+- [x] CI: a `postgres:16` service container and `DATABASE_URL` in the `check` job (untried: CI hasn't run since Phase 1)
+- [x] This step also touched `db.rs` (`migrate`), `event_store.rs` (the ack above), `lib.rs`, `tests/db_scan.rs` and `Cargo.toml`
 
 #### Step 11.6: Eventual bus and background jobs
 Files: `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/src/event_bus.rs`, `crates/tarodomain-sqlx/src/jobs.rs`
-- [ ] Eventual bus: the events are already durable in the store, so publishing only wakes the catch-up worker (`tokio::sync::Notify`). The scheduled catch-up is the safety net (§15.2)
-- [ ] Jobs: catch-up (sequencer, then dispatcher), saga timeouts, and `run_cleanup()`. Each job runs under a lease in `tarodomain_locks`
+- [x] Eventual bus: the events are already durable in the store, so publishing only wakes the catch-up worker (`tokio::sync::Notify`). The scheduled catch-up is the safety net (§15.2)
+- [x] Jobs: catch-up (sequencer, then dispatcher), saga timeouts, and `run_cleanup()`. Each job runs under a lease in `tarodomain_locks` (`jobs::run_job`; `Leases`, like the D1 ones)
+- [x] The provider (`provider.rs`, beyond the step's files) hands out the eventual bus and `wakeups()`, the `Notify` a worker awaits (Step 12.1)
 
 ### Phase 12: Native entry points (§26)
 

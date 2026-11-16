@@ -1,0 +1,28 @@
+[package]
+name = "tarodomain-sqlx"
+description = "TaroDomain SQL provider on sqlx: SQLite and PostgreSQL"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["sqlite", "postgres"]
+sqlite = ["sqlx/sqlite"]
+postgres = ["sqlx/postgres"]
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tarodomain.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tarodomain-testing.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

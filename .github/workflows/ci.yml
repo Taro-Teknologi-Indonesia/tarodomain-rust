@@ -11,6 +11,23 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The tarodomain-sqlx contract suites run on PostgreSQL too (plan Step 11.5).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tarodomain
+          POSTGRES_PASSWORD: tarodomain
+          POSTGRES_DB: tarodomain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tarodomain"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://tarodomain:tarodomain@localhost:5432/tarodomain
     steps:
       - uses: actions/checkout@v4
         with:
