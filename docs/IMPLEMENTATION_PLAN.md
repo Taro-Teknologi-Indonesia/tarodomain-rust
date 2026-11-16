@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–5 done, Phase 6 under way (Steps 6.1–6.3 done). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 6.4. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–6 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 7.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -397,7 +397,7 @@ Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/repository/mod.rs`
 - [x] `StateRepository<A>` trait: the user implements `load` (returning `Option<A>`), `save_state` (with the version check) and `exists` (defaults to `load`). The provided `save` lives on `StateStoredRepository<A>`, the `Repository<A>` that wraps the user's repository with a bus: `save_state`, publish, mark committed (design table)
 - [x] Tests: not found, the published events are the appended ones, the crossing-a-multiple rule (also as a unit test), snapshot plus tail replay (a doctored snapshot proves only the tail was replayed), fallback after a snapshot load or restore failure, a failed snapshot save, a concurrent save conflicts and keeps its events, the context until save, a publish failure outside a unit (reported) and inside one (rolled back); state-stored save, load, not found, conflict and publish failure. Mutations (exact multiple instead of crossing, always swallowing publish errors, no context adoption) each fail a test
 
-### Phase 6: Commands and pipelines (§4, §11, §14, §16)
+### Phase 6: Commands and pipelines (§4, §11, §14, §16) (done 2026-11-16)
 
 #### Step 6.1: Handlers, registry and results
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/handler.rs`, `crates/tarodomain/src/command/registry.rs`, `crates/tarodomain/src/command/result.rs`
@@ -422,12 +422,14 @@ Files: `crates/tarodomain/src/command/mod.rs`, `crates/tarodomain/src/command/pi
 
 #### Step 6.4: Pipeline tests
 Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/support/bank.rs`, `crates/tarodomain/tests/command_pipeline.rs`
-- [ ] Shared fixture domain: a small bank with an account aggregate, commands and handlers
-- [ ] A forced conflict is retried and then succeeds
-- [ ] Strong mode: a failing projection rolls back the events and the idempotency record
-- [ ] A duplicate command ID is a no-op
-- [ ] Eventual mode: the append survives a failing bus
-- [ ] `dispatch_all` with and without `continue_on_error`
+- [x] Shared fixture domain: a small bank (account aggregate, `OpenAccount` and `Deposit` commands and handlers) and a `Bank` harness that wires the local provider, a strong bus with a read model, a failing-on-demand eventual bus, both pipelines and the dispatcher
+- [x] A forced conflict is retried and then succeeds, in eventual mode (the rival's deposit survives and the retry builds on it) and in strong mode (the attempt's writes, the rival's included, roll back); giving up after 3 retries; a domain error isn't retried
+- [x] Strong mode: a failing projection rolls back the events, the projection's own write and the idempotency record, and the same command runs once the projection recovers
+- [x] A duplicate command ID is a no-op in both modes
+- [x] Eventual mode: the append survives a failing bus, and the result still reports the stored events
+- [x] A command's consistency override routes it to the other pipeline; an unknown command has no handler
+- [x] `dispatch_all` with and without `continue_on_error`
+- [x] Mutations (no unit of work in strong mode; no idempotency check) each fail tests
 
 ### Phase 7: Projections and sagas (§12, §13, §17)
 
