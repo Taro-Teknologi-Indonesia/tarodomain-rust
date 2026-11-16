@@ -4,8 +4,13 @@
 //! [`SubscriptionManager`] owns the cursors, and [`CronDispatcher`] reads
 //! after them, runs the handlers and moves them.
 
+mod backpressure;
 mod cron_dispatcher;
 mod subscription_manager;
 
+pub use backpressure::{
+    BackpressureConfig, BackpressureController, BackpressureReport, Progress, StopReason,
+    SubscriptionOutcome,
+};
 pub use cron_dispatcher::{CatchUpFailure, CatchUpResult, CronDispatcher, DEFAULT_BATCH_SIZE};
 pub use subscription_manager::{LagReport, SubscriptionLag, SubscriptionManager};

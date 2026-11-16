@@ -187,6 +187,13 @@ impl<P: Projection> ProjectionHandler<P> {
         self.routes.keys().copied().collect()
     }
 
+    /// For a shard handler, the instance its events are recorded under;
+    /// `None` for an unsharded handler, whose instances come from
+    /// [`Projection::instance_id`].
+    pub fn fixed_instance(&self) -> Option<&str> {
+        self.fixed_instance.as_deref()
+    }
+
     /// The name processed-event records are filed under: the projection's.
     pub fn record_name(&self) -> &str {
         self.projection.name()

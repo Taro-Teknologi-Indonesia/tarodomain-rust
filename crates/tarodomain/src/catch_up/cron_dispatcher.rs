@@ -160,6 +160,13 @@ impl CronDispatcher {
     /// events, or moving the cursor), or with `INVALID_CONFIGURATION` for an
     /// unknown name; an event's failure is reported in the result.
     pub async fn catch_up(&self, name: &str) -> Result<CatchUpResult> {
+        self.catch_up_batch(name, self.batch_size).await
+    }
+
+    /// [`catch_up`](Self::catch_up) with a batch of `batch_size` events
+    /// (at least 1) instead of the dispatcher's own.
+    pub async fn catch_up_batch(&self, name: &str, batch_size: usize) -> Result<CatchUpResult> {
+        let batch_size = batch_size.max(1);
         let registration = self
             .handlers
             .lock()
@@ -181,11 +188,11 @@ impl CronDispatcher {
             .load_stream_after_event(
                 subscription.stream(),
                 subscription.last_seen,
-                Some(self.batch_size.saturating_add(1)),
+                Some(batch_size.saturating_add(1)),
             )
             .await?;
-        let has_more = batch.len() > self.batch_size;
-        batch.truncate(self.batch_size);
+        let has_more = batch.len() > batch_size;
+        batch.truncate(batch_size);
 
         let mut result = CatchUpResult::default();
         for raw in &batch {

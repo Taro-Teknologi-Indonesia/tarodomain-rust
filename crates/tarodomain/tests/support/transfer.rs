@@ -7,7 +7,7 @@ use tarodomain::domain::{
     Aggregate, AggregateCore, AnyCommand, Command, CommandMessage, Event, Recorded,
 };
 use tarodomain::error::Result;
-use tarodomain::saga::{ProcessManager, SagaCtx, SagaRoutes};
+use tarodomain::saga::{ProcessManager, SagaCtx, SagaRoutes, SagaTimeout};
 use tarodomain::{aggregate_id, async_trait, event_family};
 
 use super::bank::{
@@ -314,6 +314,11 @@ impl ProcessManager for TransferSaga {
             ctx.state.phase = "completed".into();
             Ok(vec![])
         });
+        // A transfer that stalls is undone.
+        r.compensate_when::<SagaTimeout>(|ctx, _| {
+            ctx.state.phase = "timed_out".into();
+            ctx.compensation_commands()
+        });
         r.define_compensation("refund", |s: &TransferState| {
             let d = s.details.clone().expect("started");
             vec![
@@ -333,6 +338,22 @@ impl ProcessManager for TransferSaga {
                 }
                 .into(),
             ]
+        });
+    }
+}
+
+/// A saga with no timeout handler: it starts on a transfer request and
+/// does nothing else.
+pub struct QuietSaga;
+
+impl ProcessManager for QuietSaga {
+    const SAGA_TYPE: &'static str = "QuietSaga";
+    type State = TransferState;
+
+    fn routes(r: &mut SagaRoutes<Self>) {
+        r.starts_when::<TransferRequested>(|ctx, _| {
+            ctx.state.phase = "waiting".into();
+            Ok(vec![])
         });
     }
 }

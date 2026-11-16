@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–7 and Step 8.1 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 8.2. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–8 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1). Next is Step 9.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -473,7 +473,7 @@ Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/suppor
 - [x] Mutation: without the mailbox, six saga tests fail
 
 
-### Phase 8: Catch-up and operations (§18–21, §28.3)
+### Phase 8: Catch-up and operations (§18–21, §28.3) (done 2026-11-16)
 
 #### Step 8.1: Subscriptions and cron dispatcher
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/subscription_manager.rs`, `crates/tarodomain/src/catch_up/cron_dispatcher.rs`, `crates/tarodomain/tests/catch_up.rs`
@@ -486,37 +486,47 @@ Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/catch_up/mod.rs`, 
 - [x] `DeadLetterWriter` doesn't exist yet (Step 8.3), so the dispatcher writes to the `DeadLetterStore` directly; Step 8.3 may route it through the writer
 
 #### Step 8.2: Backpressure
-Files: `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/backpressure.rs`
-- [ ] `BackpressureController` (§18.4): one batch from each subscription in turn, a time budget (default 25 s), an event budget (default 10 000), passes per subscription, a throttle, and a progress callback (processed, rate, remaining)
-- [ ] Tests with `ManualClock`: each budget stops the run, round-robin fairness
+Files: `crates/tarodomain/src/catch_up/mod.rs`, `crates/tarodomain/src/catch_up/backpressure.rs`, `crates/tarodomain/tests/catch_up.rs`
+- [x] `BackpressureController::new(dispatcher, clock, sleeper, config).run() -> BackpressureReport` (§18.4): one batch from each subscription in turn (name order), a time budget (default 25 s), an event budget (default 10 000), passes per subscription (default 100), a throttle after batches that leave more, and an `on_progress` callback (`Progress { processed, elapsed, events_per_second, remaining }`)
+- [x] A subscription leaves the rotation when it catches up, fails or reaches its pass limit. `StopReason`: `Completed`, `TimeBudget`, `EventBudget`, `PassLimit`. Budgets are checked before each batch, so a run can pass the event budget by up to one batch
+- [x] Tests with `ManualClock` and `RecordingSleeper`: each budget stops the run, round-robin order, the pass limit and resuming, the throttle, progress, a failing subscription leaves the rotation
 
 #### Step 8.3: Retry policy and dead-letter writer
-Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/dead_letter/mod.rs`, `crates/tarodomain/src/dead_letter/retry_policy.rs`, `crates/tarodomain/src/dead_letter/writer.rs`
-- [ ] `RetryPolicy` (§21.3): 3 retries after 100 / 200 / 400 ms with ±10% jitter, only for retryable errors
-- [ ] `DeadLetterWriter::execute_with_retry` (§21.2) dead-letters after the last attempt, or at once for a non-retryable error, and returns the error. If the dead-letter write also fails, it returns a `DEAD_LETTER` error so the caller doesn't ack
+Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/dead_letter/mod.rs`, `crates/tarodomain/src/dead_letter/retry_policy.rs`, `crates/tarodomain/src/dead_letter/writer.rs`, `crates/tarodomain/tests/dead_letter.rs`
+- [x] `RetryPolicy` (§21.3): 3 retries after 100 / 200 / 400 ms with ±10% jitter, only for retryable errors. `run` also returns the attempt count (`Attempted { result, attempts }`); `with_retry` doesn't
+- [x] `DeadLetterWriter::execute_with_retry` (§21.2) dead-letters after the last attempt, or at once for a non-retryable error, and returns the operation's error. If the dead-letter write also fails, it returns a `DEAD_LETTER` error (retryable, with `originalError` in its context) so the caller doesn't ack
+- [x] Tests: the delays, a non-retryable error returned at once, success after a transient failure, the hook, jitter bounds; the writer's entries (attempts, payload, type), a failed write
 
 #### Step 8.4: Saga timeouts
 Files: `crates/tarodomain/src/saga/mod.rs`, `crates/tarodomain/src/saga/timeout.rs`
-- [ ] `SagaTimeout` event (`saga_type`, `saga_id`, `last_step`) with `correlation_id = saga_id`, and its ID and timestamp derived from the saga's type, ID and `updated_at`. It is never stored
-- [ ] `SagaTimeoutScheduler`, one per saga type with its own timeout (§19.3). A saga with a `compensate_when::<SagaTimeout>` route gets the event through its `SagaEventHandler`; one without is failed with the reason `"timeout"`
-- [ ] A non-retryable error from the handler fails the saga. A retryable one leaves it for the next run
+- [x] `SagaTimeout` event (`saga_type`, `saga_id`, `last_step`) with `correlation_id = saga_id`, and its ID and timestamp derived from the saga's type, ID and `updated_at`. It is never stored, so it isn't registered
+- [x] `SagaTimeoutScheduler<P>`, one per saga type with its own timeout (§19.3): `run() -> TimeoutRun { examined, handled, failed, retry_later }`, `with_max_count`. A `RUNNING` saga with a `compensate_when::<SagaTimeout>` route gets the event through its `SagaEventHandler`; one without is failed with the reason `"timeout"`
+- [x] **Departure:** a saga that is already `COMPENSATING` when it times out is failed with `"timeout"` without calling the handler. The state machine lets `compensate_when` repeat in that state, so the handler alone could never end the saga. This is also what ends a saga that failed on its own and was left compensating
+- [x] A non-retryable error from the handler fails the saga. A retryable one leaves it for the next run, with the same event and command IDs
+- [x] 3 unit tests (the event's envelope, its ID depends on the saga and `updated_at`); behaviour tests are in Step 8.7
 
 #### Step 8.5: Rebuilders
-Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/rebuild/mod.rs`, `crates/tarodomain/src/rebuild/projection_rebuilder.rs`, `crates/tarodomain/src/rebuild/saga_rebuilder.rs`
-- [ ] `ProjectionRebuilder` (§20.1): `rebuild`, `rebuild_all`, `rebuild_shards`, with `continue_on_error`, `reset_idempotency`, `call_hooks`, `batch_size` and `max_passes`. By default a failing event stops the rebuild
-- [ ] `SagaRebuilder` (§20.2): `rebuild_instance`, `rebuild_type` (finds sagas by scanning for their start events), `rebuild_all`, with a dispatch that discards commands
+Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/rebuild/mod.rs`, `crates/tarodomain/src/rebuild/projection_rebuilder.rs`, `crates/tarodomain/src/rebuild/saga_rebuilder.rs`, `crates/tarodomain/src/catch_up/cron_dispatcher.rs`, `crates/tarodomain/src/projection/projection.rs`
+- [x] `ProjectionRebuilder` (§20.1): `rebuild`, `rebuild_all`, `rebuild_shards`, with `continue_on_error`, `reset_idempotency`, `call_hooks`, `batch_size` and `max_passes` (`RebuildOptions`). By default a failing event stops the rebuild (`RebuildResult::failure`, no completion hook). Under `continue_on_error` the cursor moves past the failed event without a dead letter and it is listed in `skipped`. Handlers are `RebuildTarget`s (`ProjectionHandler<P>` implements it); shards are rebuilt with the hooks called once
+- [x] `SagaRebuilder` (§20.2): `rebuild_instance::<P>`, `rebuild_type::<P>` (finds sagas by scanning the raw log for their start events), `rebuild_all` over `SagaType::<P>::new()` targets, with a dispatch that discards commands
+- [x] Two small additions outside the listed files: `CronDispatcher::catch_up_batch(name, batch_size)` (for `batch_size`) and `ProjectionHandler::fixed_instance()` (a shard owns one instance of the processed-event records)
+- [x] Limits, in rustdoc: a saga's `SagaTimeout` events aren't stored, so a timed-out saga comes back in the state its last stored event left it in; a rebuild that fails half-way leaves the saga as far as it got
 
 #### Step 8.6: Correlation trace
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/trace.rs`
-- [ ] `CorrelationTrace::trace`, `build_tree` and `format_tree` (§28.3)
-- [ ] The tree infers command nodes between events through `command_causation_id` **(Dart)**
+- [x] `CorrelationTrace::trace` (raw events, so an unreadable one still shows), `build_tree` and `format_tree` (§28.3)
+- [x] The tree infers command nodes between events through `causation_id` and `command_causation_id` **(Dart)**. **Departure:** `build_tree` returns a `CausationTree { roots }`, since events of independent commands under one correlation ID have several roots. Cyclic data from a bad store doesn't loop
+- [x] 6 unit tests, including the saga chain and the text form
 
 #### Step 8.7: Operations tests
-Files: `crates/tarodomain/tests/catch_up.rs`, `crates/tarodomain/tests/dead_letter.rs`, `crates/tarodomain/tests/rebuild.rs`, `crates/tarodomain/tests/timeout.rs`
-- [ ] A projection rebuilt in place, or fresh from the store, matches the live one after a transfer saga, in both modes
-- [ ] A timed-out saga compensates (the refund runs, then it fails); one without a timeout handler is failed; a crash while saving the compensating saga, followed by a retry, refunds only once
-- [ ] A handler that keeps failing is dead-lettered after `max_attempts`
-- [ ] The transfer saga traces as a single chain from the root command to `TransferCompleted`
+Files: `crates/tarodomain/tests/catch_up.rs`, `crates/tarodomain/tests/dead_letter.rs`, `crates/tarodomain/tests/rebuild.rs`, `crates/tarodomain/tests/timeout.rs`, `crates/tarodomain/tests/support/transfer.rs`
+- [x] A projection rebuilt in place, or fresh from the store, matches the live one after a transfer saga, in both modes; also shards, `rebuild_all`, `continue_on_error`, `batch_size` and `max_passes`, and no replay without `reset_idempotency`
+- [x] A timed-out saga compensates (the refund runs), and fails when it times out again; one without a timeout handler is failed; a crash while saving the compensating saga, followed by a retry, refunds only once
+- [x] A handler that keeps failing is dead-lettered after `max_attempts` (in `catch_up.rs`)
+- [x] Sagas are rebuilt as they were (completed, compensating, corrupted) without new events or money moving
+- [x] The transfer saga traces as a single chain from the root command to `TransferCompleted`, in both modes (in `rebuild.rs`)
+- [x] Fixtures: `TransferSaga` gains a `compensate_when::<SagaTimeout>` route (undo the transfer), and `QuietSaga` has no timeout route
+- [x] Mutations (a compensating saga sent to the handler; no idempotency reset on rebuild) each fail tests
 
 ### Phase 9: DI, builder, validation, runtime and HTTP API (§23, §25, §26.1, §29)
 

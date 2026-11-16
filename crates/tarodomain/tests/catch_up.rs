@@ -6,12 +6,19 @@ mod support;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use std::time::Duration;
 use tarodomain::adapters::{ConsistencyMode, Provider, StreamIds};
 use tarodomain::async_trait;
 use tarodomain::bus::EventHandler;
-use tarodomain::catch_up::{CronDispatcher, SubscriptionManager};
+
+use chrono::{TimeDelta, TimeZone, Utc};
+use tarodomain::catch_up::{
+    BackpressureConfig, BackpressureController, CronDispatcher, StopReason, SubscriptionManager,
+};
 use tarodomain::domain::DomainEvent;
 use tarodomain::error::{ErrorCategory, ErrorCode, FrameworkError, Result};
+use tarodomain::kernel::backoff::RecordingSleeper;
+use tarodomain::kernel::clock::ManualClock;
 use tarodomain::kernel::ids::{Uuid, new_v7};
 
 use support::bank::AccountId;
@@ -452,4 +459,193 @@ async fn the_manager_reports_lag_and_resets() {
         manager.is_caught_up("nobody").await.unwrap_err().code(),
         &ErrorCode::InvalidConfiguration
     );
+}
+
+/// Appends its name to a shared log for each event, and moves a manual
+/// clock on by a second.
+struct Ticker {
+    name: &'static str,
+    log: Arc<Mutex<Vec<&'static str>>>,
+    clock: Arc<ManualClock>,
+}
+
+#[async_trait]
+impl EventHandler for Ticker {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    async fn handle(&self, _: &DomainEvent) -> Result<()> {
+        self.log.lock().unwrap().push(self.name);
+        self.clock.advance(TimeDelta::seconds(1));
+        Ok(())
+    }
+}
+
+struct Pressure {
+    controller: BackpressureController,
+    log: Arc<Mutex<Vec<&'static str>>>,
+    sleeper: Arc<RecordingSleeper>,
+}
+
+/// `names` subscriptions over 10 stored events, batches of 2.
+async fn pressure(names: &[&'static str], config: BackpressureConfig) -> Pressure {
+    let (bank, _) = stored_events(9).await;
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+    ));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let cron = Arc::new(dispatcher(&bank).with_batch_size(2));
+    for name in names {
+        let ticker = Ticker {
+            name,
+            log: log.clone(),
+            clock: clock.clone(),
+        };
+        cron.register(Arc::new(ticker), None).unwrap();
+    }
+    let sleeper = Arc::new(RecordingSleeper::new());
+    let controller = BackpressureController::new(cron.clone(), clock, sleeper.clone(), config);
+    Pressure {
+        controller,
+        log,
+        sleeper,
+    }
+}
+
+#[tokio::test]
+async fn backpressure_runs_to_completion_taking_turns() {
+    let p = pressure(&["a", "b"], BackpressureConfig::default()).await;
+    let report = p.controller.run().await;
+    assert_eq!(report.stopped, StopReason::Completed);
+    assert_eq!(report.events, 20);
+    assert!(
+        report
+            .subscriptions
+            .values()
+            .all(|o| o.processed == 10 && !o.has_more)
+    );
+    assert_eq!(report.subscriptions["a"].passes, 5);
+    // One batch of two each, in turn.
+    let log = p.log.lock().unwrap().clone();
+    assert_eq!(&log[..8], ["a", "a", "b", "b", "a", "a", "b", "b"]);
+}
+
+#[tokio::test]
+async fn the_event_budget_stops_the_run_between_batches() {
+    let config = BackpressureConfig {
+        max_events_per_run: 4,
+        ..Default::default()
+    };
+    let p = pressure(&["a", "b", "c"], config).await;
+    let report = p.controller.run().await;
+    assert_eq!(report.stopped, StopReason::EventBudget);
+    assert_eq!(report.events, 4);
+    assert_eq!(report.subscriptions["a"].processed, 2);
+    assert_eq!(report.subscriptions["b"].processed, 2);
+    assert_eq!(report.subscriptions["c"].processed, 0);
+    assert!(report.subscriptions["c"].has_more);
+}
+
+#[tokio::test]
+async fn the_time_budget_stops_the_run_between_batches() {
+    let config = BackpressureConfig {
+        max_duration: Duration::from_secs(3),
+        ..Default::default()
+    };
+    let p = pressure(&["a", "b", "c"], config).await;
+    let report = p.controller.run().await;
+    // a's batch takes 2 s, b's takes 2 s more, so c is never started.
+    assert_eq!(report.stopped, StopReason::TimeBudget);
+    assert_eq!(report.elapsed, Duration::from_secs(4));
+    assert_eq!(report.subscriptions["c"].passes, 0);
+    assert_eq!(report.events, 4);
+}
+
+#[tokio::test]
+async fn the_pass_limit_stops_a_subscription_not_the_others() {
+    let config = BackpressureConfig {
+        max_passes_per_subscription: 2,
+        ..Default::default()
+    };
+    let p = pressure(&["a", "b"], config).await;
+    let report = p.controller.run().await;
+    assert_eq!(report.stopped, StopReason::PassLimit);
+    for name in ["a", "b"] {
+        let outcome = &report.subscriptions[name];
+        assert_eq!(
+            (outcome.passes, outcome.processed, outcome.has_more),
+            (2, 4, true)
+        );
+    }
+    // The cursors kept their place: the next run goes on from there.
+    let next = p.controller.run().await;
+    assert_eq!(next.subscriptions["a"].processed, 4);
+}
+
+#[tokio::test]
+async fn the_throttle_pauses_after_batches_that_leave_more() {
+    let config = BackpressureConfig {
+        throttle: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let p = pressure(&["a"], config).await;
+    p.controller.run().await;
+    // 5 batches; the last one leaves nothing, so no pause after it.
+    assert_eq!(p.sleeper.slept(), vec![Duration::from_millis(50); 4]);
+}
+
+#[tokio::test]
+async fn progress_is_reported_after_each_batch() {
+    let (bank, _) = stored_events(3).await;
+    let clock = Arc::new(ManualClock::new(
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+    ));
+    let cron = Arc::new(dispatcher(&bank).with_batch_size(2));
+    let ticker = Ticker {
+        name: "a",
+        log: Arc::default(),
+        clock: clock.clone(),
+    };
+    cron.register(Arc::new(ticker), None).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let controller = BackpressureController::new(
+        cron,
+        clock,
+        Arc::new(RecordingSleeper::new()),
+        BackpressureConfig::default(),
+    )
+    .on_progress(move |progress| sink.lock().unwrap().push(progress.clone()));
+    controller.run().await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(
+        (seen[0].processed, seen[0].remaining.clone()),
+        (2, vec!["a".to_string()])
+    );
+    assert_eq!(seen[0].events_per_second, 1.0);
+    assert_eq!((seen[1].processed, seen[1].remaining.is_empty()), (4, true));
+}
+
+#[tokio::test]
+async fn a_failing_subscription_leaves_the_rotation() {
+    let (bank, ids) = stored_events(3).await;
+    let cron = Arc::new(dispatcher(&bank).with_batch_size(2));
+    let bad = Recorder::new("bad");
+    bad.fail_on(ids[0], ErrorCategory::Infrastructure);
+    cron.register(bad, None).unwrap();
+    let good = Recorder::new("good");
+    cron.register(good.clone(), None).unwrap();
+    let controller = BackpressureController::new(
+        cron.clone(),
+        Arc::new(ManualClock::new(Utc::now())),
+        Arc::new(RecordingSleeper::new()),
+        BackpressureConfig::default(),
+    );
+    let report = controller.run().await;
+    assert_eq!(report.stopped, StopReason::Completed);
+    assert!(report.subscriptions["bad"].failed.is_some());
+    assert_eq!(report.subscriptions["bad"].passes, 1);
+    assert_eq!(good.seen(), ids);
 }
