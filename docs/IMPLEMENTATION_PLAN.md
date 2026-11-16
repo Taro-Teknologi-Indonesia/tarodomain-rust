@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0 and 1 done, CI green on [GitHub](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); next is Step 2.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–2 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phase 2 passes every check locally and hasn't been pushed yet. Next is Step 3.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -33,7 +33,7 @@ Status: Phases 0 and 1 done, CI green on [GitHub](https://github.com/Taro-Teknol
 - **Two targets: native and `wasm32-unknown-unknown`.** The core, the testing crate and the bank example's domain also build for Cloudflare Workers, and CI checks that on every push (Step 0.4). On that target the core turns on the JavaScript backends of `uuid` and `chrono`, so UUIDv7 and `Utc::now()` work inside a Worker. The core doesn't use `rand`, so `getrandom` isn't in its wasm build (Steps 1.3–1.4).
 - **Async traits: `async-trait`, with `Send` futures.** Providers hand out adapters as `Arc<dyn Trait>`. Native `async fn` in traits can't be called through `dyn`, so `async-trait` boxes the futures. Revisit this when dyn-compatible async traits are stable. workers-rs handles aren't `Send`, so the Cloudflare adapters wrap them instead of the core dropping its `Send` bounds (see the design table).
 - **IDs come from the `uuid` crate** (`v7`, `serde` features). The framework writes no UUID code of its own except the deterministic UUIDv7 derivation (step 1.3).
-- **Time is `chrono::DateTime<Utc>`**, behind an injectable `Clock` so tests can fix it.
+- **Time is `chrono::DateTime<Utc>`**, behind an injectable `Clock` so tests can fix it. Code that can't take a clock as an argument, such as `raise` and `CommandMessage::from`, reads the clock in scope (`kernel::clock::now()`, task-local like the execution context), which falls back to the system clock (Step 2.5). Envelope timestamps are cut to milliseconds, the precision every store keeps.
 - **JSON is `serde_json::Value`.** Event `data`, `metadata`, snapshot and saga state go through serde.
 - **Errors are one `FrameworkError` type** with an `ErrorCode` enum. There is no class per code (§22, and the design table below).
 - **Publishing: private (decided 2026-11-16).** The crates keep `publish = false`, as in the Dart port, and other projects use a git dependency pinned to a tag. The API will keep changing while the phases land, and a crates.io release can only be yanked, never deleted. Revisit once the contract suites pass on every provider and one application runs on the framework; publishing then needs only `publish = true` and crates.io metadata.
@@ -97,7 +97,7 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | `ExecutionContext` in pluggable, process-wide context storage (§5.5) | `tokio::task_local!`: `ExecutionContext::scope(ctx, fut).await` and `ExecutionContext::current()`. The active unit of work lives in the same storage (§11.4). | Each task gets its own values, which removes the §5.5 caveat about concurrent requests. `tokio::spawn` doesn't inherit them (see Risks). |
 | Envelope enrichment in `raise()` (§5.2) | Same as the spec: `raise()` builds the envelope from the aggregate's own context (set by the repository on load), else from the ambient `ExecutionContext`, else as a new root. | Unlike Dart, Rust needs no zone trick: the envelope is built where the spec says. |
 | Events carry `correlationId` and `causationId` (§28.1) | Plus an optional `command_causation_id`: for an event raised by a command, that command's own `causation_id`. It is omitted from JSON when null. **(Dart)** | Commands aren't stored, so without it `CorrelationTrace` can't link a command to the event that caused it. |
-| `ValueObject<T>`: deep freeze, `equals`/`hashCode`, `compareTo`, `with(mutator)` (§2.3) | A `ValueObject` trait over a newtype: `validate`, `value()` and a provided `with(f)` that validates again. Equality and hashing are derived. Ordering exists only where the type implements `Ord`. | The compiler enforces immutability, and comparing an unordered value object is a compile error instead of `INCOMPARABLE_VALUE`. The code stays in the hierarchy for completeness. |
+| `ValueObject<T>`: deep freeze, `equals`/`hashCode`, `compareTo`, `with(mutator)` (§2.3) | A `ValueObject` trait over a newtype: `validate` (returning `Result<bool, BoxError>`, so the spec's three outcomes stay distinct), `from_validated`, `value()`, and provided `new` and `with(f)`, which validate. Equality and hashing are derived. Ordering exists only where the type implements `Ord`. | The compiler enforces immutability, and comparing an unordered value object is a compile error instead of `INCOMPARABLE_VALUE`. The code stays in the hierarchy for completeness. |
 | `AggregateId` subclasses (§2.4) | `AggregateId` wraps `uuid::Uuid`. The `aggregate_id!(AccountId)` macro generates a typed newtype with `generate` / `from_existing` / `from_uuidv7`. | Typed IDs without inheritance. Mixing two ID types is a compile error. |
 | A `FrameworkError` subclass per code (§22) | One `FrameworkError { code: ErrorCode, message, context, source }`. `ErrorCode` lists the 51 codes, plus `ErrorCode::Custom { code, category }` for user codes such as `INSUFFICIENT_FUNDS`. Each code has a constructor. | Idiomatic Rust (`std::error::Error` via `thiserror`). Callers can match on `code`, and user code can still add its own codes. |
 | `shouldRetry` for errors outside the hierarchy (§22.1) | Handlers and adapters return `Result<_, FrameworkError>`. Foreign errors are converted at the boundary with `FrameworkError::infrastructure(err)`, so "any other error is infrastructure and retried" holds. | Rust errors are typed, so the conversion happens where they enter. |
@@ -210,54 +210,56 @@ Files: `crates/tarodomain/src/kernel/mod.rs`, `crates/tarodomain/src/kernel/cont
 - [x] Tests: nested scopes (async and sync), two concurrent tasks each see only their own value, a spawned task starts empty, when values are read
 - [x] The CI wasm check passes
 
-### Phase 2: Domain primitives (§2, §5, §5.5, §28)
+### Phase 2: Domain primitives (§2, §5, §5.5, §28) (done 2026-11-16)
 
 #### Step 2.1: Metadata, envelopes, ExecutionContext
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/metadata.rs`, `crates/tarodomain/src/domain/envelope.rs`, `crates/tarodomain/src/domain/execution_context.rs`
-- [ ] `Metadata`: an immutable map from string to a primitive (null, bool, number, string), cheap to clone, serialized as a JSON object
-- [ ] `EventEnvelope { id, correlation_id, causation_id, command_causation_id, metadata, occurred_at }` and `CommandEnvelope { id, correlation_id, causation_id, metadata, timestamp }`
-- [ ] Parsing IDs from strings fails with `INVALID_EVENT_ID` / `INVALID_CORRELATION_ID` / `INVALID_CAUSATION_ID`, or the `INVALID_COMMAND_*` codes
-- [ ] `ExecutionContext { correlation_id, causation_id, command_causation_id, metadata }`, with `for_command`, `for_event`, `scope(ctx, fut)`, `sync_scope` and `current()`
-- [ ] Defaults: a new v7 ID; the context's correlation ID or a new root; the context's causation ID or none
-- [ ] Tests: defaults outside any context, inheritance inside one, the right code for each invalid ID, a nested scope restores the outer one
+- [x] `Metadata`: an immutable map from string to a primitive (`MetadataValue`: null, bool, number, string), cheap to clone (one shared `Arc` map, `with(key, value)` returns a copy), serialized as a JSON object in key order. Deserializing rejects arrays and objects
+- [x] `EventEnvelope { id, correlation_id, causation_id, command_causation_id, metadata, occurred_at }` and `CommandEnvelope { id, correlation_id, causation_id, metadata, timestamp }`. The constructors take the timestamp as an argument (the framework never reads the system time itself; see Step 2.5) and cut it to whole milliseconds, the precision stores keep
+- [x] Parsing IDs from strings fails with `INVALID_EVENT_ID` / `INVALID_CORRELATION_ID` / `INVALID_CAUSATION_ID`, or the `INVALID_COMMAND_*` codes: `parse_id`, `parse_correlation_id` and `parse_causation_id` on each envelope
+- [x] `ExecutionContext { correlation_id, causation_id, command_causation_id, metadata }`, with `new(correlation_id)` (a root), `for_command`, `for_event`, `scope(ctx, fut)`, `sync_scope` and `current()`. Its rustdoc shows how to hand it to `tokio::spawn`
+- [x] Defaults: a new v7 ID; the context's correlation ID or a new root; the context's causation ID or none. `new(at)` uses the context in scope, `from_context(ctx, at)` the one given
+- [x] Tests: defaults outside any context, inheritance inside one, the right code for each invalid ID, a nested scope restores the outer one, the §28.2 propagation chain
 
 #### Step 2.2: Value objects and aggregate IDs
-Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/value_object.rs`, `crates/tarodomain/src/domain/aggregate_id.rs`, `crates/tarodomain/tests/value_objects.rs`
-- [ ] `ValueObject` trait: `type Value`, `validate`, `new`, `value()`, and a provided `with(f)` that validates again. A `false` from `validate` becomes `VALUE_OBJECT_INVALID`, a framework error passes through, and anything else becomes `VALUE_OBJECT_CONSTRUCTION_FAILED`
-- [ ] `AggregateId` over `Uuid`: `generate()`, `from_existing(&str)`, `from_uuidv7(&str)`. An invalid UUID is `VALUE_OBJECT_INVALID`. Displayed in lower case, serialized as a string
-- [ ] `aggregate_id!(pub AccountId)` generates a typed newtype with the same factories and `From<AccountId> for AggregateId`. It uses `$crate` paths
-- [ ] Tests (from outside the crate, to check macro hygiene): an invalid value is rejected, `with` validates, equality ignores case, the v7-only factory rejects v4, a `compile_fail` doctest shows two ID types don't mix
+Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/value_object.rs`, `crates/tarodomain/src/domain/aggregate_id.rs`, `crates/tarodomain/tests/value_objects.rs`
+- [x] `ValueObject` trait: `type Value`, `validate(&Value) -> Result<bool, BoxError>`, `from_validated` (called only by `new`), `value()`, and provided `new` and `with(f)`, which validates again. A `false` from `validate` becomes `VALUE_OBJECT_INVALID`, a framework error passes through, and anything else becomes `VALUE_OBJECT_CONSTRUCTION_FAILED` with the error as its source
+- [x] `AggregateId` over `Uuid`: `generate()`, `from_existing(&str)`, `from_uuidv7(&str)`, `from_uuid`, `uuid()`, `FromStr`. An invalid UUID is `VALUE_OBJECT_INVALID`. Displayed in lower case, serialized as a string
+- [x] `aggregate_id!(pub AccountId)` generates a typed newtype with the same factories, `as_aggregate_id()` and `From<AccountId> for AggregateId`. It uses `$crate` paths, and implements serde through a hidden `tarodomain::__private::serde` re-export (in `lib.rs`), so the calling crate needs no serde dependency
+- [x] Tests (from outside the crate, to check macro hygiene): an invalid value is rejected, a framework error passes through, a foreign error keeps its source, `with` validates, equality ignores case, the v7-only factory rejects v4, a `compile_fail` doctest shows two ID types don't mix (checked to fail with E0308)
 
 #### Step 2.3: Events
 Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/event.rs`, `crates/tarodomain/src/domain/serialized.rs`
-- [ ] `Event` trait: `const NAME: &'static str`, `const VERSION: &'static str = "1.0.0"`, plus `Serialize + DeserializeOwned + Debug + Send + Sync + 'static`
-- [ ] `DomainEvent`: envelope, name, version and an `Arc<dyn Any + Send + Sync>` payload, with a cheap `Clone`, `downcast::<E>() -> Option<Recorded<E>>` and `is::<E>()`
-- [ ] `Recorded<E> { envelope, event: Arc<E> }`, which derefs to `E`
-- [ ] `SerializedEvent` with the §2.1 storage fields (`event_id`, `event_type`, `event_version`, `causation_id`, `correlation_id`, `data`, `metadata`, `occurred_at`) plus `command_causation_id`, and `DomainEvent::serialize()`
-- [ ] Tests: field names in the serialized JSON, a downcast to the wrong type returns `None`, `occurred_at` is ISO 8601 with milliseconds
+- [x] `Event` trait: `const NAME: &'static str`, `const VERSION: &'static str = "1.0.0"`, plus `Serialize + DeserializeOwned + Debug + Send + Sync + 'static`
+- [x] `DomainEvent`: envelope, name, version and an `Arc` payload, with a cheap `Clone`, `downcast::<E>() -> Option<Recorded<E>>`, `downcast_ref::<E>()` and `is::<E>()`. The payload is a private trait object over `Any` that can also serialize itself, so `serialize()` needs no registry
+- [x] `Recorded<E> { envelope, event: Arc<E> }`, which derefs to `E` and converts back into a `DomainEvent`
+- [x] `SerializedEvent` with the §2.1 storage fields (`event_id`, `event_type`, `event_version`, `causation_id`, `correlation_id`, `data`, `metadata`, `occurred_at`) plus `command_causation_id`, typed (`Uuid`, `Metadata`, `DateTime<Utc>`), with `envelope()`. `DomainEvent::serialize()` fails with `SERIALIZATION_ERROR` for a payload without a JSON form
+- [x] `format_timestamp` / `parse_timestamp`: the ISO 8601 form with exactly three fractional digits that every store writes
+- [x] Tests: field names in the serialized JSON, a downcast to the wrong type returns `None`, `occurred_at` is ISO 8601 with milliseconds, JSON round trip
 
 #### Step 2.4: Event families
 Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/family.rs`, `crates/tarodomain/tests/event_family.rs`
-- [ ] `EventFamily` trait: `names()`, `name(&self)`, `into_domain(self, EventEnvelope) -> DomainEvent`, `from_domain(&DomainEvent) -> Option<Self>`
-- [ ] `event_family! { pub enum AccountEvent { AccountOpened, MoneyDeposited, … } }` generates the enum (one variant per event struct), `From<E>` for each variant, and the trait impl
-- [ ] Tests (from outside the crate): conversion both ways, an event outside the family gives `None`, `names()` order
+- [x] `EventFamily` trait: `names()`, `name(&self)`, `into_domain(self, EventEnvelope) -> DomainEvent`, `from_domain(&DomainEvent) -> Option<Self>`
+- [x] `event_family! { pub enum AccountEvent { AccountOpened, MoneyDeposited, … } }` generates the enum (one variant per event struct, holding it in an `Arc`, so converting to and from `DomainEvent` shares the payload and events needn't be `Clone`), `From<E>` for each variant, and the trait impl. The enum derives `Clone` and `Debug`; extra derives pass through as attributes
+- [x] Tests (from outside the crate): conversion both ways, the payload is shared, an event outside the family gives `None`, `names()` order
 
 #### Step 2.5: Commands
-Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/command.rs`
-- [ ] `Command` trait: `const NAME`, serde, `Send + Sync + 'static`
-- [ ] `CommandMessage<C> { envelope: CommandEnvelope, command: C }`. `From<C>` takes correlation, causation and metadata from `ExecutionContext::current()`. Builder methods `with_id`, `with_correlation_id`, `with_metadata`
-- [ ] `AnyCommand`: a boxed, type-erased command (name, envelope, `as_any`, `to_serialized`), which any `C: Command` converts into with `.into()`
-- [ ] `SerializedCommand` with the §2.2 fields (`command_id`, `command_type`, `causation_id`, `correlation_id`, `data`, `metadata`, `timestamp`)
-- [ ] `AnyCommand::with_derived_id(seed, index, at)` on top of `derived_v7`
-- [ ] Tests: defaults from the context, serialized shape, derived IDs are stable
+Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/command.rs`, `crates/tarodomain/src/kernel/clock.rs`
+- [x] `clock::now()`: the clock in scope (task-local, like the execution context), else `SystemClock`; `clock::scope(clock, fut)` and `clock::sync_scope`. `CommandMessage::from` and `raise` (Step 2.6) take their timestamps from it, so a test or the runtime fixes them by scoping a `ManualClock` or the provider's clock
+- [x] `Command` trait: `const NAME`, serde, `Debug + Send + Sync + 'static`
+- [x] `CommandMessage<C> { envelope: CommandEnvelope, command: C }`, which derefs to `C`. `new` and `From<C>` take correlation, causation and metadata from `ExecutionContext::current()`. Builder methods `with_id`, `with_correlation_id`, `with_causation_id`, `with_metadata`
+- [x] `AnyCommand`: a type-erased command with a shared (`Arc`) payload (`name`, `envelope`, `id`, `as_any`, `is`, `downcast_ref`, `to_serialized`), which any `C: Command` or `CommandMessage<C>` converts into with `.into()`
+- [x] `SerializedCommand` with the §2.2 fields (`command_id`, `command_type`, `causation_id`, `correlation_id`, `data`, `metadata`, `timestamp`), and `envelope()`
+- [x] `AnyCommand::with_derived_id(seed, index, at)` on top of `derived_v7`
+- [x] Tests: defaults from the context, the timestamp from the clock in scope, builder methods, downcasts, serialized shape, derived IDs are stable and carry the event's time
 
 #### Step 2.6: Aggregate root
 Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/aggregate.rs`, `crates/tarodomain/tests/aggregate.rs`
-- [ ] `AggregateCore`: version, uncommitted `Vec<DomainEvent>`, and the aggregate's own `Option<ExecutionContext>`
-- [ ] `Aggregate` trait: `type Id`, `type Event: EventFamily`, `type Snapshot`, `const TYPE`, `new(id)` (must not raise), `id()`, `core()` / `core_mut()`, `apply(&mut self, &Self::Event)`, `snapshot_state()`, `restore_snapshot_state()`
-- [ ] Provided methods: `raise(e)` (enrich, apply, version + 1, queue), `version()`, `committed_version()`, `has_uncommitted_changes()`, `uncommitted_changes()`, `mark_changes_as_committed()`, `load_from_history(events)`, `to_snapshot() -> SnapshotData { data, version }`, `restore_snapshot(data, version)`, and the doc-hidden `set_execution_context` / `clear_execution_context`
-- [ ] `load_from_history` continues from the current version, fails with `MISSING_EVENT_HANDLER` on an event outside the family, and refuses to run with uncommitted changes
-- [ ] Tests: version arithmetic, `raise` inside a context carries its correlation and causation, `raise` outside one starts a root, history replay doesn't queue, snapshot round trip
+- [x] `AggregateCore`: version, uncommitted `Vec<DomainEvent>`, and the aggregate's own `Option<ExecutionContext>`. Its fields are private, so only the trait's methods change them
+- [x] `Aggregate` trait: `type Id` (`Copy`, `Display`, `Into<AggregateId>`, …), `type Event: EventFamily`, `type Snapshot`, `const TYPE`, `new(id)` (must not raise), `id()`, `core()` / `core_mut()`, `apply(&mut self, &Self::Event)`, `snapshot_state()`, `restore_snapshot_state()`
+- [x] Provided methods: `raise(e)` (apply, version + 1, queue with an envelope from the aggregate's own context, else the one in scope, else a new root, timed by `clock::now()`), `version()`, `committed_version()`, `has_uncommitted_changes()`, `uncommitted_changes()`, `mark_changes_as_committed()`, `load_from_history(events)`, `to_snapshot() -> SnapshotData { data, version }`, `restore_snapshot(data, version)`, `restore_version(version)` (for state-stored aggregates, §6.3) **(Dart)**, and the doc-hidden `set_execution_context` / `clear_execution_context`
+- [x] `load_from_history` continues from the current version, fails with `MISSING_EVENT_HANDLER` on an event outside the family, and refuses to run with uncommitted changes (`INVALID_AGGREGATE_STATE`, as do `restore_snapshot` and `restore_version`). A snapshot that doesn't fit `Snapshot` is `SERIALIZATION_ERROR` and leaves the aggregate unchanged
+- [x] Tests: version arithmetic, `raise` inside a context carries its correlation and causation, the aggregate's own context comes first, `raise` outside one starts a root, the time comes from the clock in scope, history replay doesn't queue, snapshot round trip
 
 ### Phase 3: Persistence and bus contracts (§3.2, §8–10, §11.4, §12.3, §14, §21.1, §24.1)
 

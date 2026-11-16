@@ -9,5 +9,13 @@
 //!
 //! See `docs/IMPLEMENTATION_PLAN.md` in the repository for the roadmap.
 
+pub mod domain;
 pub mod error;
 pub mod kernel;
+
+/// Dependencies the exported macros use, so that crates calling them don't
+/// have to depend on them too. Not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use serde;
+}
