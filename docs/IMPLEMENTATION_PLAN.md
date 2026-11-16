@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–2 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phase 2 passes every check locally and hasn't been pushed yet. Next is Step 3.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–3 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); Phases 2 and 3 pass every check locally and haven't been pushed yet. Next is Step 4.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -108,13 +108,14 @@ The spec assumes JavaScript in places. These rows are where the Rust port delibe
 | `CommandDispatcher.resolve` returns a handler (§4.2) | `resolve` returns the registration. The pipeline creates a fresh handler for each attempt. **(Dart)** | The handler instance depends on the pipeline's bus. |
 | `Projection<TDb>` with a `db` property (§12.1) | `Projection` has no type parameter; each projection owns its storage. **(Dart)** | The framework never touches the read model. |
 | `CompensationStack` of closures, not persisted (§13.5, §17) | Compensations are defined by name in `routes` (`r.define_compensation("refund", …)`). A step pushes the name, and the stack of names is saved with the saga state. Factories still run at compensation time. **(Dart)** | `SagaEventHandler` loads the saga from the store for every event and never replays it, so a stack of closures registered for an earlier event would be empty. |
+| `loadStream(streamId, fromVersion?)` and `loadAll(fromEventId?)` (§3.2) | `load_stream(stream_id, after_version, max_count)` and `load_all(after_event_id, max_count)`. Both are exclusive, as the D1 queries of §24.3 are (`stream_version > ?`, `event_id > ?`). | The spec's names read as inclusive in Rust. A repository that restored a snapshot at version 5 passes 5, and a subscription passes its `last_seen`. |
 | Saga commands get fresh IDs | Each command a saga handler returns gets a deterministic UUIDv7: the timestamp of the event's `occurred_at`, and the remaining bits from SHA-256 of (saga type, event ID, position). **(Dart)** | A redelivered event recreates the same command IDs, and command idempotency skips them. |
 | `SagaEventHandler` dispatches before saving (§13.3) | Same, plus a per-saga mailbox in task-local storage. An event for a saga that is still being handled in the same task waits until that saga is saved. **(Dart)** | With synchronous delivery, a dispatched command publishes the next event before the saga is saved. |
 | Subscription `lastSeen` only moves forward (§18.2) | Adapters order by an append **position**, not by event ID. The SQL adapter refuses to move a cursor back. **(Dart)** | Event IDs don't order events within one millisecond or across servers. |
 | Catch-up retries a failing event forever (§18.3) | Same by default. The opt-in `catch_up_max_attempts(n)` dead-letters the event after `n` runs. **(Dart)** | A permanently stuck subscription is otherwise invisible. |
 | A timeout handler that throws marks the saga `FAILED` (§19.1) | Only a non-retryable error does. A retryable one leaves the saga for the next run. The `SagaTimeout` ID is derived from the saga's type, ID and `updated_at`. **(Dart)** | A transient error shouldn't fail a saga for good, and a retry must dispatch the same command IDs. |
-| `loadTimedOut(threshold, { maxCount })` (§19.1) | `load_timed_out(before, TimedOutQuery { saga_type, limit })`. **(Dart)** | With one scheduler per saga type (§19.3), filtering after the query would let other types fill the limit. |
-| `UnitOfWork` `begin` / `commit` / `rollback` (§11.4) | Kept, plus `execute(work)`. A nested `execute`, or a strong dispatch inside one, joins the active unit and isn't retried on its own. **(Dart)** | A saga dispatching from inside a strong command has to share its transaction. After a conflict the outer one restarts. |
+| `loadTimedOut(threshold, { maxCount })` (§19.1) | `load_timed_out(before, SagaQuery { saga_type, limit })`. **(Dart)** | With one scheduler per saga type (§19.3), filtering after the query would let other types fill the limit. |
+| `UnitOfWork` `begin` / `commit` / `rollback` (§11.4) | Kept, plus `execute(work)`. A provider returns a new unit from each `create_unit_of_work()`, and `execute` makes it the task's active unit (task-local), which adapters downcast to find their transaction. A nested `execute`, or a strong dispatch inside one, joins the active unit and isn't retried on its own. **(Dart)** | A saga dispatching from inside a strong command has to share its transaction. After a conflict the outer one restarts. |
 | `Framework.build() → Promise<Framework>` (§25) | `build().await -> Result<TaroDomain>`. One runtime per process; the provider (for example an sqlx pool) is shared. | Unlike Serverpod, Rust needs no per-request session, so the Dart port's definition/runtime split isn't needed. |
 | `fetchHandler` / `queueHandler` / `scheduledHandler` (§25.2, §26) | The core exposes `dispatch`, `handle_events` (queue consumer), `run_scheduled` (catch-up, then saga timeouts), `run_cleanup` (the §14 and §21 retention) and `HttpApi`, which maps plain request and response structs to the §26.1 routes. `CloudflareWorker` connects fetch, queue and scheduled to them. `tarodomain-axum` serves `HttpApi` natively, and `framework::Worker` runs the scheduled jobs on intervals. | The core stays free of HTTP frameworks and platform code, and both hosts share one route table. |
 | `Token<T>` / `Container` (§23) | `Token<T>` is a `const` with a name and `PhantomData<T>`. Values are stored as `Arc<dyn Any + Send + Sync>`, and `resolve` returns `Arc<T>`. | Type-safe resolution without reflection. |
@@ -261,42 +262,47 @@ Files: `crates/tarodomain/src/domain/mod.rs`, `crates/tarodomain/src/domain/aggr
 - [x] `load_from_history` continues from the current version, fails with `MISSING_EVENT_HANDLER` on an event outside the family, and refuses to run with uncommitted changes (`INVALID_AGGREGATE_STATE`, as do `restore_snapshot` and `restore_version`). A snapshot that doesn't fit `Snapshot` is `SERIALIZATION_ERROR` and leaves the aggregate unchanged
 - [x] Tests: version arithmetic, `raise` inside a context carries its correlation and causation, the aggregate's own context comes first, `raise` outside one starts a root, the time comes from the clock in scope, history replay doesn't queue, snapshot round trip
 
-### Phase 3: Persistence and bus contracts (§3.2, §8–10, §11.4, §12.3, §14, §21.1, §24.1)
+### Phase 3: Persistence and bus contracts (§3.2, §8–10, §11.4, §12.3, §14, §21.1, §24.1) (done 2026-11-16)
 
 #### Step 3.1: Event store adapter contract
 Files: `crates/tarodomain/Cargo.toml`, `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/adapters/mod.rs`, `crates/tarodomain/src/adapters/event_store.rs`
-- [ ] Dependencies: `async-trait`, `futures`
-- [ ] `EventStoreAdapter` with every §3.2 method, plus `record_failed_attempt(name, event_id) -> u32` **(Dart)**
-- [ ] `AppendResult`, `StreamMetadata`, `Subscription { name, stream_id, last_seen, created_at, failed_event_id, failed_attempts }`
-- [ ] `StreamIds::ALL`, `StreamIds::for_aggregate(type, id)`, `StreamIds::category_of(stream_id)` (§3.1)
-- [ ] Rustdoc pins the semantics the contract suites test: versions count from 1, a missing stream has version 0, cross-stream reads come back in global **append** order (not event-ID order), deleting a missing row is a no-op, a stale expected version fails with `OPTIMISTIC_CONCURRENCY`
+- [x] Dependency: `async-trait`, re-exported as `tarodomain::async_trait` so adapter crates need no dependency of their own. `futures` waits for the first step that uses it: cargo 1.100 warns on an unused dependency
+- [x] `EventStoreAdapter` with every §3.2 method, plus `record_failed_attempt(name, event_id) -> u32` **(Dart)**. `load_all`, `stream_exists` and `get_stream_version` are provided methods (on `load_stream_after_event($all)` and `get_stream_metadata`), which adapters may override
+- [x] `AppendResult { version }`, `StreamMetadata { stream_id, version, created_at, updated_at }`, `Subscription { name, stream_id, last_seen, created_at, failed_event_id, failed_attempts }` with `stream()` (`$all` when `stream_id` is `None`)
+- [x] `StreamIds::ALL`, `StreamIds::for_aggregate(type, id)`, `StreamIds::category_of(stream_id)` (§3.1), plus `StreamIds::parse -> StreamKind { All, Category, Aggregate { category, id } }`. An aggregate stream ID ends in `-` and a lower-case UUID, so a type may contain hyphens
+- [x] Rustdoc pins the semantics the contract suites test: versions count from 1, a missing stream has version 0, cross-stream reads come back in global **append** order (not event-ID order), deleting a missing row is a no-op, a stale expected version fails with `OPTIMISTIC_CONCURRENCY`. Also: appends go only to aggregate streams and are atomic; an empty append still checks the version; an invalid stream ID or a stored event ID is `EVENT_APPEND_FAILED`; `subscribe` is idempotent; acking or recording a failure on a missing subscription does nothing (and returns 0)
+- [x] Tests: stream ID kinds, including hyphenated types and non-canonical IDs, and the provided methods through `Arc<dyn EventStoreAdapter>`
 
 #### Step 3.2: Snapshot and saga store contracts
 Files: `crates/tarodomain/src/adapters/mod.rs`, `crates/tarodomain/src/adapters/snapshot_store.rs`, `crates/tarodomain/src/adapters/saga_store.rs`
-- [ ] `SnapshotStoreAdapter` (§8.1), `SnapshotInput`, `Snapshot`. The key is `(source_uuid, source_version)`, and `save` is an upsert
-- [ ] `SagaStoreAdapter` (§9.1), `SagaStatus` (`Running`, `Compensating`, `Completed`, `Failed`), `SagaSaveInput`, `SagaRecord`
-- [ ] `load_timed_out(before, TimedOutQuery { saga_type, limit })` **(Dart)**. `complete` and `fail` are partial updates and idempotent
+- [x] `SnapshotStoreAdapter` (§8.1), `SnapshotInput`, `Snapshot`. The key is `(source_uuid, source_version)`, and `save` is an upsert that also replaces `created_at`. Reads filter on the type too; `list` is newest first with an optional limit; `delete_before(v)` keeps the snapshot at `v`. Metadata is a `Metadata`, empty when there is none
+- [x] `SagaStoreAdapter` (§9.1), `SagaStatus` (`Running`, `Compensating`, `Completed`, `Failed`, stored as `RUNNING` …, with `is_active` / `is_terminal`), `SagaSaveInput`, `SagaRecord`. `load_by_correlation_id` is a provided method on `load`, because a saga's ID is its correlation ID (§9.2)
+- [x] `load_timed_out(before, SagaQuery { saga_type, limit })` **(Dart)**, and `load_by_status` takes the same `SagaQuery`. Lists are ordered by `updated_at`, then type and ID. `complete` and `fail` are partial updates and idempotent: a saga that has already ended is left unchanged
+- [x] `SagaRecord::saved`, `complete`, `fail` and `is_timed_out` state the write rules once (`started_at` kept, `updated_at` moved, `completed_at` set on reaching a terminal status), for the in-memory adapter and the D1 overlay
+- [x] Tests: status text round trip, the timestamp rules, ending a saga only once, the timed-out filter
 
 #### Step 3.3: Idempotency, dead letter and unit of work contracts
 Files: `crates/tarodomain/src/adapters/mod.rs`, `crates/tarodomain/src/adapters/idempotency.rs`, `crates/tarodomain/src/adapters/dead_letter.rs`, `crates/tarodomain/src/adapters/unit_of_work.rs`
-- [ ] `ProcessedEventStore` (§12.3), `CommandIdempotencyStore` (§14.1) and `ProcessedCommand`
-- [ ] `DeadLetterStore` (§21.1), `DeadLetterInput` (handler name, event ID and type, payload, error code and message, attempts), `DeadLetterEntry`
-- [ ] `UnitOfWork`: `begin`, `commit`, `rollback`, `is_active`, and a provided `execute(work)` that rolls back on error. The active unit is kept in task-local storage, so a nested `execute` joins it
-- [ ] Rustdoc: the 7-day and 30-day retentions (§14, §21) belong to the cleanup job, not to the stores
+- [x] `ProcessedEventStore` (§12.3), `CommandIdempotencyStore` (§14.1) and `ProcessedCommand`. Marking twice keeps the first record. `CommandIdempotencyStore::exists` is a provided method on `get_processed_at`; `list` is oldest first with an optional limit
+- [x] `DeadLetterStore` (§21.1), `DeadLetterInput` (handler name, event ID and type, payload as JSON, error code and message, attempts), `DeadLetterEntry`. `write` returns the new ID; IDs increase in write order and are never reused; `get(event_id, handler)` returns the latest entry; `list` is in ID order
+- [x] `UnitOfWork`: `begin`, `commit`, `rollback`, `is_active`, and `execute(work)` that rolls back on error. `execute` is an inherent method on `dyn UnitOfWork` (`self: Arc<Self>`), because a generic trait method isn't dyn-compatible. It puts the unit in task-local storage, so a nested `execute` joins it, and adapters find it with `<dyn UnitOfWork>::active()` and `downcast_ref::<T>()` (through an `AsAny` supertrait, since trait upcasting needs Rust 1.86). The work's error comes back unchanged, with `rollbackError` in its context if the rollback also failed
+- [x] Rustdoc: the 7-day and 30-day retentions (§14, §21) belong to the cleanup job, not to the stores
+- [x] Tests: commit and rollback, the error unchanged, a failed begin, commit or rollback, a nested `execute` joins (and its error rolls back the outer unit), two concurrent units each see their own
 
 #### Step 3.4: Event bus contracts and InMemoryEventBus
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/bus/mod.rs`, `crates/tarodomain/src/bus/contracts.rs`, `crates/tarodomain/src/bus/in_memory.rs`
-- [ ] `EventBus` (`name`, `publish_all`, `publish`), `EventHandler` (`name`, `handle`), `SubscribableEventBus` (`subscribe`, `unsubscribe`)
-- [ ] `InMemoryEventBus`: delivers synchronously in subscription order. Subscribing the same handler twice is a no-op; a different handler with a taken name is `INVALID_CONFIGURATION`
-- [ ] `publish_all` is fail-fast and returns the handler's error unchanged, so a conflict stays retryable. `publish_all_with_results` continues and collects every outcome
-- [ ] Tests: delivery order, fail-fast skips later handlers, with-results collects everything, duplicate names
+- [x] `EventBus` (`name`, `publish_all(&[DomainEvent])`, and `publish` provided on it), `EventHandler` (`name`, `handle(&DomainEvent)`), `SubscribableEventBus` (`subscribe(Arc<dyn EventHandler>)`, `unsubscribe(name) -> bool`; synchronous, since subscribing happens at build)
+- [x] `InMemoryEventBus::new(name)`: delivers each event to every handler in subscription order before the next event. Subscribing the same handler (`Arc::ptr_eq`) twice is a no-op; a different handler with a taken name is `INVALID_CONFIGURATION`. No lock is held while a handler runs, so a handler may publish to the same bus
+- [x] `publish_all` is fail-fast and returns the handler's error unchanged, so a conflict stays retryable. `publish_all_with_results` continues and returns a `Delivery { handler_name, event_id, outcome }` per handler and event
+- [x] Tests: delivery order, fail-fast skips later handlers, with-results collects everything, duplicate names, unsubscribe, a handler publishing to its own bus
 
 #### Step 3.5: Provider contract and prelude
-Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/adapters/mod.rs`, `crates/tarodomain/src/adapters/provider.rs`
-- [ ] `ConsistencyMode` (`Strong`, `Eventual`) and `EventBusConfig { consistency, transport }`
-- [ ] `Provider` (§24.1): `provider_type()`, a `create_*` method for each of the six stores, `create_event_bus(config)`, `create_unit_of_work() -> Option<Arc<dyn UnitOfWork>>`, and `initialize()` (a no-op by default)
-- [ ] Also `clock()` and `sleeper()`, defaulting to `SystemClock` and `TokioSleeper`. A provider for a platform where those don't work (Cloudflare) returns its own
-- [ ] `tarodomain::prelude` re-exports what a domain crate needs
+Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/adapters/mod.rs`, `crates/tarodomain/src/adapters/provider.rs`, `crates/tarodomain/src/bus/contracts.rs`, `crates/tarodomain/src/bus/in_memory.rs`
+- [x] `ConsistencyMode` (`Strong`, `Eventual`; `"strong"` / `"eventual"` as text and in serde) and `EventBusConfig { consistency, transport: Option<String> }`
+- [x] `Provider` (§24.1): `provider_type()`, a `create_*` method for each of the six stores, `create_event_bus(&config) -> Result<Arc<dyn EventBus>>` (an unknown transport is `INVALID_CONFIGURATION`), `create_unit_of_work() -> Option<Arc<dyn UnitOfWork>>` (a new unit per call), and `initialize()` (a no-op by default, safe to repeat)
+- [x] Also `clock()` and `sleeper()`, defaulting to `SystemClock` and `TokioSleeper`. On wasm32 the default sleeper returns at once, since tokio's timers don't work there; a provider for a platform where those don't work (Cloudflare) returns its own
+- [x] `EventBus::as_subscribable()` (`None` by default, `Some` for `InMemoryEventBus`), so the framework can subscribe handlers to a provider's bus without trait upcasting (Rust 1.86). Hence the two `bus/` files
+- [x] `tarodomain::prelude` re-exports what a domain crate needs: the domain types, the error types, `aggregate_id!` and `event_family!`, `EventBus` and `EventHandler`, `ConsistencyMode` and `async_trait`. A doctest builds an event family through it
 
 ### Phase 4: Local provider and contract suites (§24 LocalProvider)
 
@@ -330,7 +336,7 @@ Files: `Cargo.toml`, `crates/tarodomain-testing/Cargo.toml`, `crates/tarodomain-
 - [ ] Each suite is a `pub async fn` that takes a factory returning a provider with empty storage
 - [ ] The crate builds for wasm32, because the Cloudflare harness (Step 10.8) runs the suites inside workerd. Suites use only `tokio::join!` and `futures`; `#[tokio::test]` appears only in the `provider_contract_tests!` expansion. Check it with `cargo check --target wasm32-unknown-unknown -p tarodomain-testing`; CI covers it once the harness build lands (Step 10.10)
 - [ ] Fixtures: small events and serialized events with fixed IDs and timestamps
-- [ ] Event store contract: versions from 1 and 0 for a missing stream; a stale expected version conflicts, including two racing appends (`tokio::join!`); `from_version` and `max_count`; category and `$all` reads; two same-millisecond IDs that sort in reverse come back in append order; load by correlation ID; delete stream; subscription create, ack, list, delete and failed attempts
+- [ ] Event store contract: versions from 1 and 0 for a missing stream; a stale expected version conflicts, including two racing appends (`tokio::join!`); an empty append; `after_version` and `max_count`; category and `$all` reads; two same-millisecond IDs that sort in reverse come back in append order; load by correlation ID; delete stream; subscription create, ack, list, delete and failed attempts
 
 #### Step 4.6: Store contracts
 Files: `crates/tarodomain-testing/src/lib.rs`, `crates/tarodomain-testing/src/snapshot_contract.rs`, `crates/tarodomain-testing/src/saga_store_contract.rs`, `crates/tarodomain-testing/src/idempotency_contract.rs`, `crates/tarodomain-testing/src/dead_letter_contract.rs`

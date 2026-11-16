@@ -9,6 +9,7 @@ publish.workspace = true
 
 # The core stays platform-agnostic: no database driver, HTTP framework or cloud SDK.
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
