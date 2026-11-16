@@ -34,11 +34,33 @@ impl Event for MoneyDeposited {
     const NAME: &'static str = "MoneyDeposited";
 }
 
+/// Money was taken out.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MoneyWithdrawn {
+    pub cents: i64,
+}
+
+impl Event for MoneyWithdrawn {
+    const NAME: &'static str = "MoneyWithdrawn";
+}
+
+/// A withdrawal was refused because the funds are short.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WithdrawalRejected {
+    pub cents: i64,
+}
+
+impl Event for WithdrawalRejected {
+    const NAME: &'static str = "WithdrawalRejected";
+}
+
 event_family!(
     /// Everything that happens to a bank account.
     pub enum AccountEvent {
         AccountOpened,
         MoneyDeposited,
+        MoneyWithdrawn,
+        WithdrawalRejected,
     }
 );
 
@@ -87,6 +109,8 @@ impl Aggregate for BankAccount {
         match event {
             AccountEvent::AccountOpened(e) => self.state.owner = e.owner.clone(),
             AccountEvent::MoneyDeposited(e) => self.state.balance += e.cents,
+            AccountEvent::MoneyWithdrawn(e) => self.state.balance -= e.cents,
+            AccountEvent::WithdrawalRejected(_) => {}
         }
     }
 
@@ -119,6 +143,17 @@ pub struct Deposit {
 
 impl Command for Deposit {
     const NAME: &'static str = "Deposit";
+}
+
+/// Takes money out of an account, or records a rejection if funds are short.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Withdraw {
+    pub account: AccountId,
+    pub cents: i64,
+}
+
+impl Command for Withdraw {
+    const NAME: &'static str = "Withdraw";
 }
 
 /// A command nothing handles.
@@ -195,6 +230,29 @@ impl CommandHandler<Deposit> for DepositHandler {
         account.raise(MoneyDeposited {
             cents: command.cents,
         });
+        repository.save(&mut account).await
+    }
+}
+
+/// Withdraws money, or raises `WithdrawalRejected` when funds are short.
+pub struct WithdrawHandler {
+    pub context: CommandContext,
+}
+
+#[async_trait]
+impl CommandHandler<Withdraw> for WithdrawHandler {
+    async fn handle(&self, command: &CommandMessage<Withdraw>) -> Result<()> {
+        let repository = self.context.repository::<BankAccount>()?;
+        let mut account = repository.load(command.account).await?;
+        if account.state.balance < command.cents {
+            account.raise(WithdrawalRejected {
+                cents: command.cents,
+            });
+        } else {
+            account.raise(MoneyWithdrawn {
+                cents: command.cents,
+            });
+        }
         repository.save(&mut account).await
     }
 }

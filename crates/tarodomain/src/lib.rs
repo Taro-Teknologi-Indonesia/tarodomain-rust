@@ -16,7 +16,9 @@ pub mod domain;
 pub mod error;
 pub mod event_sourcing;
 pub mod kernel;
+pub mod projection;
 pub mod repository;
+pub mod saga;
 
 /// The attribute the framework's async traits use, re-exported so that a crate
 /// implementing an adapter or handler needs no `async-trait` dependency of its

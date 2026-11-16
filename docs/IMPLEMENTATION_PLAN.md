@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–6 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 7.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–7 done. Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally and hasn't been pushed yet. Next is Step 8.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -431,40 +431,47 @@ Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/suppor
 - [x] `dispatch_all` with and without `continue_on_error`
 - [x] Mutations (no unit of work in strong mode; no idempotency check) each fail tests
 
-### Phase 7: Projections and sagas (§12, §13, §17)
+### Phase 7: Projections and sagas (§12, §13, §17) (done 2026-11-16)
 
 #### Step 7.1: Projections
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/projection/mod.rs`, `crates/tarodomain/src/projection/projection.rs`, `crates/tarodomain/src/projection/shard.rs`
-- [ ] `Projection` trait: `name()`, `routes(&mut ProjectionRoutes<Self>)`, `instance_id(&DomainEvent)`, `on_rebuild_start`, `on_rebuild_complete`
-- [ ] `ProjectionRoutes::on::<E>(handler)` for `async fn(Arc<Self>, Recorded<E>) -> Result<()>`. A second route for the same event is `INVALID_CONFIGURATION`
-- [ ] `ProjectionHandler<P>` implements `EventHandler` (§12.1): skip if processed; route by name; an unknown event is marked processed and reported to an `on_unhandled` hook (for `DispatchGuard`); a failed event is not marked
-- [ ] `ShardProjection`: FNV-1a 32-bit hash of the shard key modulo the shard count. The handler is named `<name>-shard-<i>` and records events under the projection name with the shard as instance (§12.3)
+- [x] `Projection` trait: `name()`, `routes(&mut ProjectionRoutes<Self>)`, `instance_id(&DomainEvent)`, `on_rebuild_start`, `on_rebuild_complete`
+- [x] `ProjectionRoutes::on::<E>(handler)` for `async fn(Arc<Self>, Recorded<E>) -> Result<()>`. A second route for the same event is `INVALID_CONFIGURATION`
+- [x] `ProjectionHandler<P>` implements `EventHandler` (§12.1): skip if processed; route by name; an unknown event is marked processed and reported to an `on_unhandled` hook (for `DispatchGuard`); a failed event is not marked
+- [x] `ShardProjection`: FNV-1a 32-bit hash of the shard key modulo the shard count. The handler is named `<name>-shard-<i>` and records events under the projection name with the shard as instance (§12.3)
+- [x] Tests (inline, on a fake `ProcessedEventStore`): a redelivered event is skipped, an unknown event is marked and reported, a failed event isn't marked and runs again, a duplicate route is `INVALID_CONFIGURATION`, FNV-1a reference vectors, each event is handled by exactly its shard, zero shards is rejected. `routes` is an associated function (no `self`); a duplicate route is reported by `ProjectionHandler::new`, not by `on`. `shard_handlers` builds one handler per shard
 
 #### Step 7.2: Saga state machine and compensations
 Files: `crates/tarodomain/src/lib.rs`, `crates/tarodomain/src/saga/mod.rs`, `crates/tarodomain/src/saga/state_machine.rs`, `crates/tarodomain/src/saga/compensation.rs`
-- [ ] `SagaState` (`Initial`, `Running`, `Compensating`, `Completed`, `Failed`), `HandlerKind`, and `transition()` for every §13.2 row. `Compensating` + `starts_when`, which the table leaves out, is `INVALID_SAGA_TRANSITION`
-- [ ] `CompensationStack`: `define(name, factory)`, `push(name)`, `take_all()` (LIFO), `pop()`. The names serialize, and the factories run at compensation time **(Dart)**
-- [ ] Tests: every state × kind cell, LIFO order
+- [x] `SagaState` (`Initial`, `Running`, `Compensating`, `Completed`, `Failed`), `HandlerKind`, and `transition()` for every §13.2 row. `Compensating` + `starts_when`, which the table leaves out, is `INVALID_SAGA_TRANSITION`
+- [x] `CompensationStack`: `define(name, factory)`, `push(name)`, `take_all()` (LIFO), `pop()`. The names serialize, and the factories run at compensation time **(Dart)**
+- [x] Tests: every state × kind cell, LIFO order
+- [x] Departures: `CompensationStack` holds only names; the factories live in `CompensationDefs<S>` (defined by `SagaRoutes::define_compensation`), and `pop` / `take_all` take the defs and the state. `transition()` returns the error each cell prescribes, with the state and handler in its context. 4 + 3 unit tests
 
 #### Step 7.3: Process manager
 Files: `crates/tarodomain/src/saga/mod.rs`, `crates/tarodomain/src/saga/process_manager.rs`
-- [ ] `ProcessManager` trait: `const SAGA_TYPE`, `type State: Default + Serialize + DeserializeOwned`, `routes(&mut SagaRoutes<Self>)`
-- [ ] `SagaRoutes`: `starts_when`, `continue_when`, `compensate_when`, `completed_when`, `define_compensation`. Priority is completed > compensate > continue > starts
-- [ ] `SagaInstance<P>`: saga ID, state, status, current step (`"<kind><EventName>"`), failure reason, compensations
-- [ ] `handle(&DomainEvent) -> Result<Vec<AnyCommand>>` follows §13.1. Handlers run under `ExecutionContext::for_event`, so the commands carry the saga ID as correlation and the event as cause. Command IDs are derived from `"<saga type>/<event id>"`, the command's index and the event's `occurred_at` **(Dart)**. `mark_failed(reason)` ends the saga `Failed`
-- [ ] `to_save_input()` and `restore(SagaRecord)` store the state together with the compensation names
+- [x] `ProcessManager` trait: `const SAGA_TYPE`, `type State: Default + Serialize + DeserializeOwned`, `routes(&mut SagaRoutes<Self>)`
+- [x] `SagaRoutes`: `starts_when`, `continue_when`, `compensate_when`, `completed_when`, `define_compensation`. Priority is completed > compensate > continue > starts
+- [x] `SagaInstance<P>`: saga ID, state, status, current step (`"<kind><EventName>"`), failure reason, compensations
+- [x] `handle(&DomainEvent) -> Result<Vec<AnyCommand>>` follows §13.1. Handlers run under `ExecutionContext::for_event`, so the commands carry the saga ID as correlation and the event as cause. Command IDs are derived from `"<saga type>/<event id>"`, the command's index and the event's `occurred_at` **(Dart)**. `mark_failed(reason)` ends the saga `Failed`
+- [x] `to_save_input()` and `restore(SagaRecord)` store the state together with the compensation names
+- [x] Departures: handlers take `&mut SagaCtx<P>` (state, `register_compensation`, `compensation_commands`, `pop_compensation`) and the typed event. `SagaRoutes::build()` rejects a duplicate handler (same kind and event) and a saga without `starts_when`. The saved state JSON is `{ "state": …, "compensations": […] }`. After `handle` fails the instance must be dropped. 6 unit tests (derived IDs and context, the state machine through `handle`, a save/restore round trip, priority)
 
 #### Step 7.4: Saga event handler
 Files: `crates/tarodomain/src/saga/mod.rs`, `crates/tarodomain/src/saga/event_handler.rs`
-- [ ] The §13.3 flow, steps 1–9. Commands go through a `SagaCommandDispatch` function, so the rebuilder can pass one that discards them
-- [ ] An event for a completed or failed saga is recorded and skipped, not an error. An event a running saga has no handler for is skipped without saving, so it doesn't push back the timeout **(Dart)**
-- [ ] Per-saga mailbox in task-local storage **(Dart)**
+- [x] The §13.3 flow, steps 1–9. Commands go through a `SagaCommandDispatch` function, so the rebuilder can pass one that discards them
+- [x] An event for a completed or failed saga is recorded and skipped, not an error. An event a running saga has no handler for is skipped without saving, so it doesn't push back the timeout **(Dart)**
+- [x] Per-saga mailbox in task-local storage **(Dart)**
+- [x] `SagaCommandDispatch::new`, `to_dispatcher(Arc<CommandDispatcher>)` and `discard()`. Step 8 of §13.3 (`complete` / `fail`) is done by saving with the terminal status, which sets `completed_at` (§9). Events that wait in the mailbox are dropped if the saga's handling fails: the failure reaches the publisher, which retries or leaves them to catch-up
 
 #### Step 7.5: Projection and saga tests
-Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/support/transfer.rs`, `crates/tarodomain/tests/projection.rs`, `crates/tarodomain/tests/saga.rs`
-- [ ] Projections: a redelivered event is skipped, an unknown event is marked, a failing handler is not marked, shards split deterministically
-- [ ] TransferSaga end to end in both consistency modes: happy path; one- and two-step compensation in reverse order; a rejected first step; a redelivered event whose commands are skipped as duplicates; a crash between the withdrawal commit and the saga save moves the money only once; a strong-mode rollback of the whole saga
-- [ ] Every invalid transition of §13.2 through the handler
+Files: `crates/tarodomain/tests/support/mod.rs`, `crates/tarodomain/tests/support/bank.rs`, `crates/tarodomain/tests/support/transfer.rs`, `crates/tarodomain/tests/projection.rs`, `crates/tarodomain/tests/saga.rs`
+- [x] Projections: a redelivered event is skipped, an unknown event is marked, a failing handler is not marked, shards split deterministically
+- [x] TransferSaga end to end in both consistency modes: happy path; one- and two-step compensation in reverse order; a rejected first step; a redelivered event whose commands are skipped as duplicates; a crash between the withdrawal commit and the saga save moves the money only once; a strong-mode rollback of the whole saga
+- [x] Every invalid transition of §13.2 through the handler
+- [x] Fixtures: the bank gains `Withdraw` (raising `WithdrawalRejected` when funds are short); `transfer.rs` has the `MoneyTransfer` aggregate and `TransferSaga`; the `Bank` harness wires the saga on the strong bus, `pump()` delivers queued events to it in eventual mode, and a crash switch fails a saga dispatch after its commands commit. A failed transfer stays `COMPENSATING`; the timeout (Step 8.4) ends it
+- [x] Mutation: without the mailbox, six saga tests fail
+
 
 ### Phase 8: Catch-up and operations (§18–21, §28.3)
 

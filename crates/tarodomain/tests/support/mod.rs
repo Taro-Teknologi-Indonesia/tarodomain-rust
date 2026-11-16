@@ -4,12 +4,14 @@
 #![allow(dead_code)]
 
 pub mod bank;
+pub mod transfer;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tarodomain::adapters::{
-    CommandIdempotencyStore, ConsistencyMode, EventBusConfig, Provider, StreamIds,
+    CommandIdempotencyStore, ConsistencyMode, EventBusConfig, Provider, SagaRecord,
+    SagaStoreAdapter, StreamIds,
 };
 use tarodomain::async_trait;
 use tarodomain::bus::{EventBus, EventHandler};
@@ -22,11 +24,16 @@ use tarodomain::event_sourcing::{EventRegistry, EventStore};
 use tarodomain::kernel::backoff::RecordingSleeper;
 use tarodomain::kernel::ids::Uuid;
 use tarodomain::repository::{EventSourcedRepository, Repository};
+use tarodomain::saga::{SagaCommandDispatch, SagaEventHandler};
 use tarodomain_local::LocalProvider;
 
 use bank::{
     AccountEvent, AccountId, BankAccount, Counters, Deposit, DepositHandler, OpenAccount,
-    OpenAccountHandler,
+    OpenAccountHandler, Withdraw, WithdrawHandler,
+};
+use transfer::{
+    CompleteTransfer, CompleteTransferHandler, FailTransfer, FailTransferHandler, MoneyTransfer,
+    RequestTransfer, RequestTransferHandler, TransferEvent, TransferSaga,
 };
 
 /// The name the read model is stored under.
@@ -89,7 +96,13 @@ pub struct Bank {
     pub queue: Arc<QueueBus>,
     pub counters: Arc<Counters>,
     pub sleeper: Arc<RecordingSleeper>,
-    pub dispatcher: CommandDispatcher,
+    pub dispatcher: Arc<CommandDispatcher>,
+    pub saga: Arc<SagaEventHandler<TransferSaga>>,
+    pub saga_store: Arc<dyn SagaStoreAdapter>,
+    /// Makes the next saga dispatch fail after its commands have committed.
+    pub crash_after_dispatch: Arc<AtomicBool>,
+    /// How many queue events the saga has been given (eventual mode).
+    pub delivered: AtomicUsize,
     pub idempotency: Arc<dyn CommandIdempotencyStore>,
 }
 
@@ -100,6 +113,7 @@ impl Bank {
         let provider = Arc::new(LocalProvider::new());
         let mut events = EventRegistry::new();
         AccountEvent::register_all(&mut events).unwrap();
+        TransferEvent::register_all(&mut events).unwrap();
         let store = EventStore::new(provider.create_event_store_adapter(), Arc::new(events));
 
         let strong_bus = provider
@@ -124,6 +138,13 @@ impl Bank {
                     as Arc<dyn Repository<BankAccount>>
             })
             .unwrap();
+        let transfer_store = store.clone();
+        repositories
+            .register::<MoneyTransfer>(move |bus| {
+                Arc::new(EventSourcedRepository::new(transfer_store.clone(), bus))
+                    as Arc<dyn Repository<MoneyTransfer>>
+            })
+            .unwrap();
         let repositories = Arc::new(repositories);
 
         let counters = Arc::new(Counters::default());
@@ -139,6 +160,19 @@ impl Bank {
             })
             .unwrap();
 
+        registry
+            .register::<Withdraw, _>(|context| WithdrawHandler { context })
+            .unwrap();
+        registry
+            .register::<RequestTransfer, _>(|context| RequestTransferHandler { context })
+            .unwrap();
+        registry
+            .register::<CompleteTransfer, _>(|context| CompleteTransferHandler { context })
+            .unwrap();
+        registry
+            .register::<FailTransfer, _>(|context| FailTransferHandler { context })
+            .unwrap();
+
         let sleeper = Arc::new(RecordingSleeper::new());
         let checker = ConcurrencyChecker::new(sleeper.clone());
         let pipeline = |mode, bus: Arc<dyn EventBus>| {
@@ -150,12 +184,44 @@ impl Bank {
                 checker.clone(),
             )
         };
-        let dispatcher = CommandDispatcher::new(
+        let dispatcher = Arc::new(CommandDispatcher::new(
             Arc::new(registry),
-            pipeline(ConsistencyMode::Strong, strong_bus),
+            pipeline(ConsistencyMode::Strong, strong_bus.clone()),
             pipeline(ConsistencyMode::Eventual, queue.clone()),
             default,
+        ));
+
+        let cell: Arc<OnceLock<Arc<CommandDispatcher>>> = Arc::new(OnceLock::new());
+        let crash_after_dispatch = Arc::new(AtomicBool::new(false));
+        let (dispatch_cell, crash) = (cell.clone(), crash_after_dispatch.clone());
+        let dispatch = SagaCommandDispatch::new(move |commands| {
+            let (cell, crash) = (dispatch_cell.clone(), crash.clone());
+            async move {
+                let dispatcher = cell.get().expect("the bank is built").clone();
+                for command in commands {
+                    dispatcher.dispatch(command).await?;
+                }
+                if crash.swap(false, Ordering::SeqCst) {
+                    return Err(FrameworkError::queue_error("crashed before the saga save"));
+                }
+                Ok(())
+            }
+        });
+        let saga_store = provider.create_saga_store_adapter();
+        let saga = Arc::new(
+            SagaEventHandler::<TransferSaga>::new(
+                saga_store.clone(),
+                provider.create_processed_event_store(),
+                dispatch,
+            )
+            .unwrap(),
         );
+        strong_bus
+            .as_subscribable()
+            .unwrap()
+            .subscribe(saga.clone())
+            .unwrap();
+        cell.set(dispatcher.clone()).ok();
         let idempotency = provider.create_command_idempotency_store();
         Self {
             provider,
@@ -165,8 +231,41 @@ impl Bank {
             counters,
             sleeper,
             dispatcher,
+            saga,
+            saga_store,
+            crash_after_dispatch,
+            delivered: AtomicUsize::new(0),
             idempotency,
         }
+    }
+
+    /// Eventual mode: gives the saga each event the queue holds, one at a
+    /// time, until none are new. Stops at the first failure and returns it;
+    /// a later call delivers that event again.
+    pub async fn pump(&self) -> Result<()> {
+        loop {
+            let next = {
+                let published = self.queue.published.lock().unwrap();
+                published
+                    .get(self.delivered.load(Ordering::SeqCst))
+                    .cloned()
+            };
+            let Some(event) = next else {
+                return Ok(());
+            };
+            self.saga.handle(&event).await?;
+            self.delivered.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The processed-event store of the bank's provider.
+    pub fn provider_processed(&self) -> Arc<dyn tarodomain::adapters::ProcessedEventStore> {
+        self.provider.create_processed_event_store()
+    }
+
+    /// The saga stored under `saga_id`.
+    pub async fn saga_record(&self, saga_id: Uuid) -> Option<SagaRecord> {
+        self.saga_store.load("TransferSaga", saga_id).await.unwrap()
     }
 
     /// Opens an account and returns its ID.
