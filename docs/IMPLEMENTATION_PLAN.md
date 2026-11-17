@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–12 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phase 11 passes every contract suite on SQLite and on PostgreSQL 16 (the compose service, run through Kiri). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1, and the new `postgres` service in `ci.yml` is untried). Next is Step 13.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–13 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phase 11 passes every contract suite on SQLite and on PostgreSQL 16 (the compose service, run through Kiri). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1, and the new `postgres` service in `ci.yml` is untried). All planned steps are done. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -748,15 +748,15 @@ Files: `Cargo.toml`, `examples/bank-account-server/Cargo.toml`, `examples/bank-a
 - [x] The read model is SQL tables in the same database, written through `provider.db()`, and served at `GET /balances`
 - [x] A curl walkthrough in the README (run by hand against the built binary: the eventual deposit and the saga transfer reached `/balances`). An eventual deposit reaches the read model within one catch-up tick
 
-### Phase 13: Documentation
+### Phase 13: Documentation (done 2026-11-17)
 
 #### Step 13.1: Guides
 Files: `README.md`, `docs/GETTING_STARTED.md`, `docs/CLOUDFLARE.md`, `crates/tarodomain/src/lib.rs`, `Cargo.toml`
-- [ ] Remove the `unused_workspace_dependencies = "allow"` from the root `Cargo.toml` (added in Step 1.1) and drop any shared dependency nothing uses
-- [ ] Getting started: define events, an aggregate, commands, a projection and a saga; build; dispatch
-- [ ] Cloudflare: bindings, migrations, strong and eventual mode on D1 and Queues, read models through `provider.db()`, cron schedules, D1 limits, deploying
-- [ ] Using the private crates from another repository through a git dependency pinned to a tag
-- [ ] The crate-level example compiles as a doctest, and `cargo doc` is warning-free
+- [x] Remove the `unused_workspace_dependencies = "allow"` from the root `Cargo.toml` (added in Step 1.1) and drop any shared dependency nothing uses (the lint table is gone, so cargo's default `warn` applies; `bank-account-worker` was the one unused entry)
+- [x] Getting started: define events, an aggregate, commands, a projection and a saga; build; dispatch
+- [x] Cloudflare: bindings, migrations, strong and eventual mode on D1 and Queues, read models through `provider.db()`, cron schedules, D1 limits, deploying
+- [x] Using the private crates from another repository through a git dependency pinned to a tag
+- [x] The crate-level example compiles as a doctest, and `cargo doc` is warning-free
 
 ## Risks
 

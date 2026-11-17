@@ -31,7 +31,6 @@ tarodomain-local = { path = "crates/tarodomain-local" }
 tarodomain-sqlx = { path = "crates/tarodomain-sqlx" }
 tarodomain-testing = { path = "crates/tarodomain-testing" }
 bank-account = { path = "examples/bank-account" }
-bank-account-worker = { path = "examples/bank-account-worker" }
 
 # Shared third-party dependencies. Crates opt in with `name.workspace = true`.
 async-trait = "0.1"
@@ -54,8 +53,3 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-
-[workspace.lints.cargo]
-# The shared dependencies above are declared up front, so a plan step only
-# touches its own crate's Cargo.toml. Back to "warn" in plan step 13.1.
-unused_workspace_dependencies = "allow"

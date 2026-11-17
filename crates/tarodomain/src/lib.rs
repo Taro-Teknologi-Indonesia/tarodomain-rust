@@ -7,7 +7,128 @@
 //! framework or a cloud SDK: providers live in their own crates and implement
 //! the persistence and event bus contracts defined here.
 //!
-//! See `docs/IMPLEMENTATION_PLAN.md` in the repository for the roadmap.
+//! # Example
+//!
+//! A counter: an event, an aggregate, a command with its handler, a
+//! projection, and a framework built on the in-memory provider.
+//!
+//! ```
+//! use std::sync::{Arc, Mutex};
+//!
+//! use serde::{Deserialize, Serialize};
+//! use tarodomain::command::{CommandContext, CommandHandler};
+//! use tarodomain::framework::TaroDomain;
+//! use tarodomain::prelude::*;
+//! use tarodomain::projection::{Projection, ProjectionRoutes};
+//! use tarodomain_local::LocalProvider;
+//!
+//! aggregate_id!(pub CounterId);
+//!
+//! // An event is a plain struct with a stored name.
+//! #[derive(Debug, Serialize, Deserialize)]
+//! pub struct Incremented {
+//!     pub by: i64,
+//! }
+//! impl Event for Incremented {
+//!     const NAME: &'static str = "Incremented";
+//! }
+//! event_family!(pub enum CounterEvent { Incremented });
+//!
+//! // An aggregate: `apply` rebuilds state from events, and never fails.
+//! pub struct Counter {
+//!     id: CounterId,
+//!     core: AggregateCore,
+//!     total: i64,
+//! }
+//! impl Aggregate for Counter {
+//!     type Id = CounterId;
+//!     type Event = CounterEvent;
+//!     type Snapshot = i64;
+//!     const TYPE: &'static str = "Counter";
+//!
+//!     fn new(id: CounterId) -> Self {
+//!         Self { id, core: AggregateCore::new(), total: 0 }
+//!     }
+//!     fn id(&self) -> CounterId { self.id }
+//!     fn core(&self) -> &AggregateCore { &self.core }
+//!     fn core_mut(&mut self) -> &mut AggregateCore { &mut self.core }
+//!     fn apply(&mut self, event: &CounterEvent) {
+//!         match event {
+//!             CounterEvent::Incremented(e) => self.total += e.by,
+//!         }
+//!     }
+//!     fn snapshot_state(&self) -> i64 { self.total }
+//!     fn restore_snapshot_state(&mut self, total: i64) { self.total = total }
+//! }
+//!
+//! // A command, and the handler that runs it.
+//! #[derive(Clone, Debug, Serialize, Deserialize)]
+//! pub struct Increment {
+//!     pub counter: CounterId,
+//!     pub by: i64,
+//! }
+//! impl Command for Increment {
+//!     const NAME: &'static str = "Increment";
+//! }
+//!
+//! struct IncrementHandler(CommandContext);
+//!
+//! #[async_trait]
+//! impl CommandHandler<Increment> for IncrementHandler {
+//!     async fn handle(&self, command: &CommandMessage<Increment>) -> Result<()> {
+//!         let repository = self.0.repository::<Counter>()?;
+//!         let mut counter = match repository.load_or_none(command.counter).await? {
+//!             Some(counter) => counter,
+//!             None => Counter::new(command.counter),
+//!         };
+//!         counter.raise(Incremented { by: command.by });
+//!         repository.save(&mut counter).await
+//!     }
+//! }
+//!
+//! // A projection: a read model fed by events.
+//! struct Total(Arc<Mutex<i64>>);
+//!
+//! impl Total {
+//!     async fn on_incremented(self: Arc<Self>, event: Recorded<Incremented>) -> Result<()> {
+//!         *self.0.lock().unwrap() += event.by;
+//!         Ok(())
+//!     }
+//! }
+//!
+//! impl Projection for Total {
+//!     fn name(&self) -> &str { "Total" }
+//!     fn routes(routes: &mut ProjectionRoutes<Self>) {
+//!         routes.on::<Incremented, _, _>(Self::on_incremented);
+//!     }
+//! }
+//!
+//! # tokio_test_block(async {
+//! let total = Arc::new(Mutex::new(0));
+//! let read_model = total.clone();
+//! let app = TaroDomain::builder()
+//!     .use_provider(Arc::new(LocalProvider::new()))
+//!     .consistency(ConsistencyMode::Strong, None)
+//!     .aggregate::<Counter>(|a| a.event_sourced())
+//!     .command::<Increment, _>(|_, context| IncrementHandler(context), None)
+//!     .projection(move |_| Ok(Arc::new(Total(read_model))))
+//!     .build()
+//!     .await?;
+//!
+//! let counter = CounterId::generate();
+//! app.dispatch(Increment { counter, by: 2 }).await?;
+//! app.dispatch(Increment { counter, by: 3 }).await?;
+//! assert_eq!(*total.lock().unwrap(), 5);
+//! # Ok::<(), FrameworkError>(())
+//! # }).unwrap();
+//! # fn tokio_test_block<F: std::future::Future<Output = Result<()>>>(f: F) -> Result<()> {
+//! #     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+//! # }
+//! ```
+//!
+//! The guides in the repository's `docs/` folder walk through the same pieces
+//! in detail: `GETTING_STARTED.md` for the domain, and `CLOUDFLARE.md` for
+//! deploying it. `docs/IMPLEMENTATION_PLAN.md` holds the roadmap.
 
 pub mod adapters;
 pub mod bus;

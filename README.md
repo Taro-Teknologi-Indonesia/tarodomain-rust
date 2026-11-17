@@ -4,7 +4,13 @@ Rust implementation of the [TaroDomain framework specification](spec/README.md):
 
 The spec is a git submodule at [`spec/`](spec), pinned to the version this code implements. Its upstream is [Taro-Teknologi-Indonesia/tarodomain](https://github.com/Taro-Teknologi-Indonesia/tarodomain). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port.
 
-**Status:** Phases 0–12 of the [implementation plan](docs/IMPLEMENTATION_PLAN.md): the whole core, the in-memory provider, the provider contract suites, the Cloudflare and SQL providers, and the native axum server. The Cloudflare provider is tested on SQLite; its runs on D1 itself (`scripts/cloudflare-contract.sh`) and the example Worker under `wrangler dev` haven't been run yet. The plan also holds the roadmap, the step checklists and the places where Rust differs from the spec.
+**Status:** Phases 0–12 of the [implementation plan](docs/IMPLEMENTATION_PLAN.md): the whole core, the in-memory provider, the provider contract suites, the Cloudflare and SQL providers, and the native axum server. The Cloudflare provider is tested on SQLite; its runs on D1 itself (`scripts/cloudflare-contract.sh`) and the example Worker under `wrangler dev` haven't been run yet. Phase 13 adds the guides: [Getting started](docs/GETTING_STARTED.md) and [Cloudflare](docs/CLOUDFLARE.md). The plan also holds the roadmap, the step checklists and the places where Rust differs from the spec.
+
+## Guides
+
+- [Getting started](docs/GETTING_STARTED.md): events, an aggregate, commands, a projection and a saga, then build and dispatch
+- [Cloudflare](docs/CLOUDFLARE.md): bindings, migrations, strong and eventual mode on D1 and Queues, read models, cron, D1 limits, deploying
+- Using the crates from another repository: a git dependency pinned to a tag ([how](docs/GETTING_STARTED.md#add-the-crates))
 
 ## Crates
 
