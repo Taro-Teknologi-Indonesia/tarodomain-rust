@@ -6,6 +6,8 @@ mod builder;
 mod http;
 mod taro_domain;
 mod validation;
+#[cfg(not(target_arch = "wasm32"))]
+mod worker;
 
 pub use validation::{
     AggregateInfo, AggregateKind, DispatchGuard, FrameworkValidator, ProjectionInfo,
@@ -20,3 +22,6 @@ pub use taro_domain::{
     COMMAND_RETENTION, CleanupReport, EVENT_RETENTION, MessageOutcome, MessageResult, PROVIDER,
     QUEUE_CONSUMER, QueueMessage, ScheduledRun, TARO_DOMAIN, TaroDomain,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use worker::Worker;

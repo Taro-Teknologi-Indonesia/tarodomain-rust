@@ -1,0 +1,24 @@
+[package]
+name = "tarodomain-axum"
+description = "TaroDomain native HTTP entry point: an axum router over the core's HTTP API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum.workspace = true
+serde_json.workspace = true
+tarodomain.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+serde.workspace = true
+tarodomain-local.workspace = true
+tarodomain-testing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+
+[lints]
+workspace = true

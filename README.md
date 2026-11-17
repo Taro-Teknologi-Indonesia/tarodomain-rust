@@ -4,7 +4,7 @@ Rust implementation of the [TaroDomain framework specification](spec/README.md):
 
 The spec is a git submodule at [`spec/`](spec), pinned to the version this code implements. Its upstream is [Taro-Teknologi-Indonesia/tarodomain](https://github.com/Taro-Teknologi-Indonesia/tarodomain). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port.
 
-**Status:** Phases 0–10 of the [implementation plan](docs/IMPLEMENTATION_PLAN.md): the whole core, the in-memory provider, the provider contract suites and the Cloudflare provider. The Cloudflare provider is tested on SQLite; its runs on D1 itself (`scripts/cloudflare-contract.sh`) and the example Worker under `wrangler dev` haven't been run yet. The plan also holds the roadmap, the step checklists and the places where Rust differs from the spec.
+**Status:** Phases 0–12 of the [implementation plan](docs/IMPLEMENTATION_PLAN.md): the whole core, the in-memory provider, the provider contract suites, the Cloudflare and SQL providers, and the native axum server. The Cloudflare provider is tested on SQLite; its runs on D1 itself (`scripts/cloudflare-contract.sh`) and the example Worker under `wrangler dev` haven't been run yet. The plan also holds the roadmap, the step checklists and the places where Rust differs from the spec.
 
 ## Crates
 
@@ -15,8 +15,9 @@ The spec is a git submodule at [`spec/`](spec), pinned to the version this code 
 | [`tarodomain-testing`](crates/tarodomain-testing) | §24 | Contract test suites that every provider must pass | Done (Phase 4) |
 | [`tarodomain-cloudflare`](crates/tarodomain-cloudflare) | §24.2–24.3, §26.1, §27.2 | Cloudflare provider on workers-rs: D1, Queues, Cron Triggers, and the Worker entry points | Code done (Phase 10); passes every contract suite on SQLite. The suites on D1 itself are wired into CI and not yet run |
 | `tarodomain-sqlx` | §24, §27 | SQLite and PostgreSQL provider on sqlx, for servers outside Cloudflare | Done (Phase 11); PostgreSQL tests need `DATABASE_URL` (`docker --context kiri compose up -d`) |
-| `tarodomain-axum` | §26 | Native HTTP entry point and worker loop | Planned (Phase 12) |
+| [`tarodomain-axum`](crates/tarodomain-axum) | §26 | Native HTTP entry point: an axum router over the core's `HttpApi`. The background `Worker` loop lives in the core (`framework::Worker`) | Done (Phase 12) |
 | `examples/bank-account` | — | The BankAccount / TransferMoney example used throughout the spec | Done |
+| [`examples/bank-account-server`](examples/bank-account-server) | — | The same example served by axum on SQLite, with the worker loop running | Done (Phase 12) |
 | [`examples/bank-account-worker`](examples/bank-account-worker) | — | The same example deployed as a Cloudflare Worker; the template to copy | Done (Phase 10) |
 
 `tarodomain` must stay platform-agnostic: it never depends on a provider, a database driver or an HTTP framework. It also builds for `wasm32-unknown-unknown`, the target Cloudflare Workers run.
@@ -59,6 +60,25 @@ docker --context kiri compose up -d
 Cloudflare development needs no containers (see above).
 
 To add a crate, create it under `crates/` with `version.workspace = true` (and the other `*.workspace` keys) plus `[lints] workspace = true`, then list it under `members` in the root `Cargo.toml`.
+
+## Example server
+
+`examples/bank-account-server` serves the bank over HTTP on SQLite (`DATABASE_URL`, default `sqlite://bank.db`; `ADDR`, default `127.0.0.1:3000`; `CONSISTENCY`, `eventual` by default or `strong`).
+
+```sh
+cargo run -p bank-account-server &
+A=$(uuidgen | tr A-Z a-z); B=$(uuidgen | tr A-Z a-z)
+post() { curl -s -X POST localhost:3000/commands/$1 -d "$2"; echo; }
+post OpenAccount "{\"account\":\"$A\",\"owner\":\"Ann\"}"
+post OpenAccount "{\"account\":\"$B\",\"owner\":\"Bob\"}"
+post Deposit "{\"account\":\"$A\",\"cents\":10000}"
+curl -s localhost:3000/balances        # in eventual mode this may lag by one catch-up tick
+post RequestTransfer "{\"transfer\":\"$(uuidgen | tr A-Z a-z)\",\"from\":\"$A\",\"to\":\"$B\",\"cents\":3000}"
+curl -s localhost:3000/balances        # Ann 7000, Bob 3000
+curl -s localhost:3000/health
+```
+
+The worker catches up as soon as a command publishes, and at least every second.
 
 ## Updating the spec
 

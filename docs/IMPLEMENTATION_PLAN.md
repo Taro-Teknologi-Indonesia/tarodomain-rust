@@ -1,6 +1,6 @@
 # Implementation plan: TaroDomain for Rust
 
-Status: Phases 0–11 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phase 11 passes every contract suite on SQLite and on PostgreSQL 16 (the compose service, run through Kiri). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1, and the new `postgres` service in `ci.yml` is untried). Next is Step 12.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
+Status: Phases 0–12 done; Phase 10 is code-complete and passes every check that runs without Node.js (fmt, clippy, tests including every contract suite on SQLite, the wasm32 check, rustdoc). Three boxes stay open until someone with Node.js runs them: the contract suites on D1 itself (Step 10.8), the example worker's walkthrough (Step 10.9) and CI (Step 10.10); one more, measuring `build()`, needs workerd (Step 10.7). Phase 11 passes every contract suite on SQLite and on PostgreSQL 16 (the compose service, run through Kiri). Phases 0 and 1 are green on [GitHub CI](https://github.com/Taro-Teknologi-Indonesia/tarodomain-rust/actions); everything after passes every check locally (CI not checked since Phase 1, and the new `postgres` service in `ci.yml` is untried). Next is Step 13.1. Updated 2026-11-16: Cloudflare provider added as Phase 10; publishing, macros and the local container engine decided. Targets the [TaroDomain spec v1.0](../spec/README.md) at commit `a9243e3` (the `spec/` submodule). The [Dart implementation](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart) is the reference port. It pins the older spec commit `983d2cb`, and its [plan](https://github.com/Taro-Teknologi-Indonesia/tarodomain-dart/blob/main/docs/IMPLEMENTATION_PLAN.md) records the design problems this plan reuses.
 
 ## How to use this plan
 
@@ -725,25 +725,28 @@ Files: `crates/tarodomain-sqlx/src/lib.rs`, `crates/tarodomain-sqlx/src/event_bu
 - [x] Jobs: catch-up (sequencer, then dispatcher), saga timeouts, and `run_cleanup()`. Each job runs under a lease in `tarodomain_locks` (`jobs::run_job`; `Leases`, like the D1 ones)
 - [x] The provider (`provider.rs`, beyond the step's files) hands out the eventual bus and `wakeups()`, the `Notify` a worker awaits (Step 12.1)
 
-### Phase 12: Native entry points (§26)
+### Phase 12: Native entry points (§26) (done 2026-11-17)
 
 #### Step 12.1: Worker loop
 Files: `crates/tarodomain/src/framework/mod.rs`, `crates/tarodomain/src/framework/worker.rs`, `crates/tarodomain/tests/worker.rs`
-- [ ] `Worker::new(framework)` with `catch_up_every`, `timeouts_every` and `cleanup_every`, and `run(shutdown)`. It wakes early when the eventual bus signals
-- [ ] Native only (`cfg(not(target_arch = "wasm32"))`): it uses tokio's timers. On Cloudflare, Cron Triggers do this job
-- [ ] Tests: a shutdown signal stops it, and an eventual dispatch reaches the projection without waiting for the interval
+- [x] `Worker::new(framework)` with `catch_up_every`, `timeouts_every` and `cleanup_every`, and `run(shutdown)`. It wakes early when the eventual bus signals
+- [x] Native only (`cfg(not(target_arch = "wasm32"))`): it uses tokio's timers. On Cloudflare, Cron Triggers do this job
+- [x] Tests: a shutdown signal stops it, the first run catches up on what was missed, a signal reaches the projection before the interval, and the interval catches up without a signal
+- [x] Also touched, beyond the step's files: `taro_domain.rs` (`TaroDomain::run_catch_up`, the catch-up half of `run_scheduled`). The core knows no sqlx, so the early wake is `Worker::wake_on(Arc<Notify>)`, which the host feeds with `SqlxProvider::wakeups()`
 
 #### Step 12.2: HTTP adapter (axum)
 Files: `Cargo.toml`, `crates/tarodomain-axum/Cargo.toml`, `crates/tarodomain-axum/src/lib.rs`, `crates/tarodomain-axum/tests/http.rs`
-- [ ] Workspace member added
-- [ ] `router(framework)` serves `HttpApi` (Step 9.5): a catch-all handler converts the axum request and response, so the routes, the `x-request-id` handling and the error rendering stay in the core
-- [ ] Tests through `tower::ServiceExt::oneshot`
+- [x] Workspace member added
+- [x] `router(domain)` (and `router_for(HttpApi)`, to allow `POST /migrate`) serves `HttpApi` (Step 9.5): a catch-all handler converts the axum request and response, so the routes, the `x-request-id` handling and the error rendering stay in the core
+- [x] Request bodies over 1 MiB are `413` and non-UTF-8 bodies `400`, in the core's error shape
+- [x] Tests through `tower::ServiceExt::oneshot`
 
 #### Step 12.3: Example server
 Files: `Cargo.toml`, `examples/bank-account-server/Cargo.toml`, `examples/bank-account-server/src/main.rs`, `README.md`
-- [ ] Workspace member added
-- [ ] The bank domain from `examples/bank-account` on SQLite through `tarodomain-sqlx`, served by axum with the worker running
-- [ ] A curl walkthrough in the README. An eventual deposit reaches the read model within one catch-up tick
+- [x] Workspace member added
+- [x] The bank domain from `examples/bank-account` on SQLite through `tarodomain-sqlx`, served by axum with the worker running
+- [x] The read model is SQL tables in the same database, written through `provider.db()`, and served at `GET /balances`
+- [x] A curl walkthrough in the README (run by hand against the built binary: the eventual deposit and the saga transfer reached `/balances`). An eventual deposit reaches the read model within one catch-up tick
 
 ### Phase 13: Documentation
 

@@ -272,6 +272,13 @@ impl TaroDomain {
         .await
     }
 
+    /// Only the catch-up of [`run_scheduled`](Self::run_scheduled): every
+    /// handler reads what it hasn't seen from the event store. For a host
+    /// that runs the jobs apart, such as [`Worker`](super::Worker).
+    pub async fn run_catch_up(&self) -> Vec<(String, Result<CatchUpResult>)> {
+        self.in_clock(self.inner.cron.run_all()).await
+    }
+
     /// Only the saga timeouts of [`run_scheduled`](Self::run_scheduled): for
     /// each saga type with a timeout, acts on the sagas that have stood still
     /// for that long (§19). For a host that schedules the two jobs apart.
