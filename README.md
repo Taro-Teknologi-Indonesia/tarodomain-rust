@@ -6,6 +6,17 @@ The spec is a git submodule at [`spec/`](spec), pinned to the version this code 
 
 **Status:** Phases 0–12 of the [implementation plan](docs/IMPLEMENTATION_PLAN.md): the whole core, the in-memory provider, the provider contract suites, the Cloudflare and SQL providers, and the native axum server. The Cloudflare provider is tested on SQLite; its runs on D1 itself (`scripts/cloudflare-contract.sh`) and the example Worker under `wrangler dev` haven't been run yet. Phase 13 adds the guides: [Getting started](docs/GETTING_STARTED.md) and [Cloudflare](docs/CLOUDFLARE.md). The plan also holds the roadmap, the step checklists and the places where Rust differs from the spec.
 
+## Verification status
+
+All phases (0–13) of the [implementation plan](docs/IMPLEMENTATION_PLAN.md) are implemented. Locally, `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (571 tests, every contract suite on the in-memory provider and SQLite; the sqlx provider also on PostgreSQL 16), the wasm32 check and `cargo doc` pass.
+
+What is **not** verified yet:
+
+1. **Cloudflare on real D1.** The contract suites on D1 itself (Step 10.8), the example Worker under `wrangler dev` (10.9) and CI's `workers` job (10.10) have not been run, and `build()` has not been measured in workerd (10.7). They need Node.js. The provider is tested on SQLite behind the same statement layer, so it is code-complete but not proven, and [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) was written from the code, not from a real run.
+2. **CI.** GitHub CI was last confirmed green at Phase 1, and the `postgres` service in `ci.yml` is untried.
+3. **Guide snippets.** Only the crate-level example in `crates/tarodomain/src/lib.rs` runs as a doctest. The other snippets in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) are adapted from `examples/bank-account`, which compiles, but they are not compiled themselves.
+4. **No audit.** Phases 0–12 were not re-checked against the spec after they were ticked off.
+
 ## Guides
 
 - [Getting started](docs/GETTING_STARTED.md): events, an aggregate, commands, a projection and a saga, then build and dispatch
